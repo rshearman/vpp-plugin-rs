@@ -1,0 +1,19 @@
+[package]
+name = "vpp-plugin"
+version = "0.1.0"
+edition = "2021"
+description = """
+A framework for writing high-performance, reliable VPP plugins in Rust.
+"""
+repository = "https://github.com/rshearman/vpp-plugin-rs"
+license = "Apache-2.0"
+keywords = ["vpp"]
+categories = ["api-bindings", "network-programming"]
+
+[build-dependencies]
+bindgen = "0.72.0"
+cc = "1"
+
+[dependencies]
+bitflags = "2.9.4"
+foreign-types = "0.5"
