@@ -3,6 +3,7 @@
 //! This module contains abstractions around VPP's core library, `vppinfra`, including
 //! vectors and utilities.
 
+pub mod error;
 pub mod vec;
 
 pub use vec::{Vec, VecRef};
