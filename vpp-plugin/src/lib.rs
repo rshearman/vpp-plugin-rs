@@ -16,3 +16,6 @@
 
 pub mod bindings;
 pub mod vppinfra;
+
+// Re-export macros for convenience
+pub use vpp_plugin_macros::vlib_plugin_register;

@@ -27,3 +27,30 @@
 //! to ensure compatibility when using them directly.
 
 include!(concat!(env!("OUT_DIR"), "/vlib_bindings.rs"));
+
+// bindgen generates duplicate definitions for these types due to forward declarations in vlib/trace.h, so we blocklist them and declare them manually here
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct vlib_trace_main_t {
+    pub trace_buffer_pool: *mut *mut vlib_trace_header_t,
+    pub last_main_loop_count: u32_,
+    pub filter_node_index: u32_,
+    pub filter_flag: u32_,
+    pub filter_count: u32_,
+    pub trace_enable: u32_,
+    pub nodes: *mut vlib_trace_node_t,
+    pub verbose: ::std::os::raw::c_int,
+    pub trace_buffer_callback: vlib_trace_buffer_callback_t,
+    pub add_trace_callback: vlib_add_trace_callback_t,
+    pub current_trace_filter_function: vlib_is_packet_traced_fn_t,
+}
+
+#[repr(C)]
+#[repr(align(64))]
+#[derive(Copy, Clone)]
+pub struct vlib_buffer_t {
+    pub cacheline0: __BindgenUnionField<[u8_; 0usize]>,
+    pub __bindgen_anon_1: __BindgenUnionField<vlib_buffer_t__bindgen_ty_1>,
+    pub bindgen_union_field: [u8; 256usize],
+}

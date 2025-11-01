@@ -17,11 +17,15 @@ fn main() {
 
     let bindings = bindgen::Builder::default()
         .header("vlib_wrapper.h")
+        .allowlist_file(".*/vlib/unix/plugin\\.h")
         .allowlist_file(".*/vppinfra/error\\.h")
         .allowlist_file(".*/vppinfra/error_bootstrap\\.h")
         .allowlist_file(".*/vppinfra/mem\\.h")
         .allowlist_file(".*/vppinfra/vec\\.h")
         .allowlist_file(".*/vppinfra/vec_bootstrap\\.h")
+        // bindgen generates duplicate definitions for these types due to forward declarations in vlib/trace.h
+        .blocklist_type("vlib_trace_main_t")
+        .blocklist_type("vlib_buffer_t")
         .flexarray_dst(true)
         .derive_default(true)
         .layout_tests(false)

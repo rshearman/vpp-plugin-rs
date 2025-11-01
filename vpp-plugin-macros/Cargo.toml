@@ -1,0 +1,22 @@
+[package]
+name = "vpp-plugin-macros"
+version = "0.1.0"
+edition = "2021"
+description = """
+Macros for VPP plugins.
+"""
+repository = "https://github.com/rshearman/vpp-plugin-rs"
+license = "Apache-2.0"
+keywords = ["vpp"]
+categories = ["api-bindings", "network-programming"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0.46"
+quote = "1.0.20"
+syn = { version = "2", features = [ "derive", "full", "parsing", "printing", "proc-macro" ], default-features = false }
+
+[dev-dependencies]
+vpp-plugin = { path = "../vpp-plugin" }
