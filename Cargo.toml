@@ -1,3 +1,11 @@
 [workspace]
 resolver = "2"
-members = [ "vpp-plugin", "vpp-plugin-macros" ]
+members = [ "vpp-example-plugin", "vpp-plugin", "vpp-plugin-macros"]
+
+[profile.release]
+# Generate smaller code, essential for packet processing performance.
+panic = "abort"
+# fat => optimize across all crates to get optimal packet processing performance.
+lto = "fat"
+# One unit per crate (optimisation is per unit, so this gives the best effectivity of lto at the expense of compile time)
+codegen-units = 1

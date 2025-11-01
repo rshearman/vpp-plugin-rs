@@ -1,0 +1,22 @@
+#! /bin/bash
+
+cargo build
+
+if [ ! -d venv ]; then
+    python3 -mvenv venv
+
+    source venv/bin/activate
+
+    pip install --upgrade pip
+    pip install -r tests/requirements.txt
+else
+    source venv/bin/activate
+fi
+
+cd tests
+
+mkdir -p plugin-libs
+
+ln -f ../target/debug/libvpp_example_plugin.so plugin-libs/example_plugin.so
+
+python3 run_tests.py --vpp-tag=vpp --vpp-ws-dir=/home/rob/vpp/ --filter *.*.* --extern-plugin-dir $(pwd)/plugin-libs/

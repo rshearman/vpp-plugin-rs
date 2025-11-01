@@ -1,2 +1,7 @@
 /Cargo.lock
 /target
+/tests/plugin-libs
+/venv
+
+# Python bytecode
+*.pyc
