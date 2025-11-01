@@ -15,7 +15,10 @@
 //! having performance parity with C plugins for fast path packet processing.
 
 pub mod bindings;
+#[doc(hidden)]
+pub mod macro_support;
+pub mod vlib;
 pub mod vppinfra;
 
 // Re-export macros for convenience
-pub use vpp_plugin_macros::vlib_plugin_register;
+pub use vpp_plugin_macros::{vlib_init_function, vlib_plugin_register};

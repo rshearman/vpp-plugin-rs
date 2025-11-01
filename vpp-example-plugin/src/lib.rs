@@ -26,7 +26,14 @@
 //! The plugin is intentionally small and focussed and can be used as a
 //! template when implementing your own feature.
 
-use vpp_plugin::vlib_plugin_register;
+use vpp_plugin::{
+    vlib::BarrierHeldMainRef, vlib_init_function, vlib_plugin_register, vppinfra::error::ErrorStack,
+};
+
+#[vlib_init_function]
+fn example_init(_vm: &mut BarrierHeldMainRef) -> Result<(), ErrorStack> {
+    Ok(())
+}
 
 vlib_plugin_register! {
     version: "1.0",

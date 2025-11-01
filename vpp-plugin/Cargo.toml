@@ -16,5 +16,6 @@ cc = "1"
 
 [dependencies]
 bitflags = "2.9.4"
+ctor = "0.5.0"
 foreign-types = "0.5"
 vpp-plugin-macros = { version = "0.1.0", path = "../vpp-plugin-macros" }

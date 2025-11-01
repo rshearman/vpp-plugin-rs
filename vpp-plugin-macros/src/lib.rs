@@ -124,3 +124,126 @@ pub fn vlib_plugin_register(ts: TokenStream) -> TokenStream {
 
     output.into()
 }
+
+/// Marks a function as an VPP plugin init function.
+///
+/// Multiple init functions are supported, but the invocation order is not guaranteed.
+///
+/// # Examples
+///
+/// ```
+/// # use vpp_plugin::{vlib::BarrierHeldMainRef, vlib_init_function, vppinfra::error::ErrorStack};
+///
+/// #[vlib_init_function]
+/// fn foo(_vm: &mut BarrierHeldMainRef) -> Result<(), ErrorStack> {
+///   println!("Hello, world!");
+///   Ok(())
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn vlib_init_function(_attribute: TokenStream, function: TokenStream) -> TokenStream {
+    let item: syn::Item = syn::parse_macro_input!(function);
+    if let syn::Item::Fn(function) = item {
+        let syn::ItemFn {
+            attrs,
+            block,
+            vis,
+            sig:
+                syn::Signature {
+                    ident,
+                    unsafety,
+                    constness,
+                    abi,
+                    inputs,
+                    output,
+                    ..
+                },
+            ..
+        } = function;
+
+        // Ensure that visibility modifier is not present
+        match vis {
+            syn::Visibility::Inherited => {}
+            _ => panic!("#[vlib_init_function] methods must not have visibility modifiers"),
+        }
+
+        let init_fn_ident = syn::parse_str::<syn::Ident>(format!("__{}", ident).as_ref())
+            .expect("Unable to create identifier");
+        let ctor_fn_ident = syn::parse_str::<syn::Ident>(
+            format!("__vlib_add_init_function_init_{}", ident).as_ref(),
+        )
+        .expect("Unable to create identifier");
+        let dtor_fn_ident =
+            syn::parse_str::<syn::Ident>(format!("__vlib_rm_init_function_{}", ident).as_ref())
+                .expect("Unable to create identifier");
+        let init_list_elt_ident =
+            syn::parse_str::<syn::Ident>(format!("_VLIB_INIT_FUNCTION_INIT_{}", ident).as_ref())
+                .expect("Unable to create identifier");
+        let ident_lit = format!("{}\0", ident);
+
+        let output = quote!(
+            #(#attrs)*
+            #vis #unsafety #abi #constness fn #ident(#inputs) #output #block
+
+            unsafe extern "C" fn #init_fn_ident(vm: *mut ::vpp_plugin::bindings::vlib_main_t) -> *mut ::vpp_plugin::bindings::clib_error_t
+            {
+                if let Err(e) = #ident(::vpp_plugin::vlib::BarrierHeldMainRef::from_ptr_mut(vm)) {
+                    e.into_raw()
+                } else {
+                    std::ptr::null_mut()
+                }
+            }
+
+            static mut #init_list_elt_ident: ::vpp_plugin::bindings::_vlib_init_function_list_elt_t = ::vpp_plugin::bindings::_vlib_init_function_list_elt_t {
+                f: None,
+                name: std::ptr::null_mut(),
+                next_init_function: std::ptr::null_mut(),
+                runs_before: std::ptr::null_mut(),
+                runs_after: std::ptr::null_mut(),
+                init_order: std::ptr::null_mut(),
+            };
+
+            #[::vpp_plugin::macro_support::ctor::ctor(crate_path = ::vpp_plugin::macro_support::ctor)]
+            unsafe fn #ctor_fn_ident () {
+                unsafe {
+                    let vgm = ::vpp_plugin::bindings::vlib_helper_get_global_main();
+                    #init_list_elt_ident.next_init_function = (*vgm).init_function_registrations;
+                    (*vgm).init_function_registrations = std::ptr::addr_of_mut!(#init_list_elt_ident);
+                    #init_list_elt_ident.f = Some(#init_fn_ident);
+                    #init_list_elt_ident.name = #ident_lit.as_ptr() as *mut ::std::os::raw::c_char;
+                }
+            }
+
+            #[::vpp_plugin::macro_support::ctor::dtor(crate_path = ::vpp_plugin::macro_support::ctor)]
+            unsafe fn #dtor_fn_ident() {
+                let vgm = ::vpp_plugin::bindings::vlib_helper_get_global_main();
+
+                let mut this = (*vgm).init_function_registrations;
+                if this.is_null() {
+                    return;
+                }
+                if this == std::ptr::addr_of_mut!(#init_list_elt_ident) {
+                    (*vgm).init_function_registrations = (*this).next_init_function;
+                    return;
+                }
+
+                let mut prev = this;
+                this = (*this).next_init_function;
+                while !this.is_null() {
+                    if this == std::ptr::addr_of_mut!(#init_list_elt_ident) {
+                        (*prev).next_init_function = (*this).next_init_function;
+                        return;
+                    }
+                    prev = this;
+                    this = (*this).next_init_function;
+                }
+            }
+        );
+
+        // eprintln!("{}", output);
+
+        output.into()
+    } else {
+        panic!("#[vlib_init_function] items must be functions");
+    }
+}

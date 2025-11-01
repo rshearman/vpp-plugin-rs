@@ -17,6 +17,9 @@ fn main() {
 
     let bindings = bindgen::Builder::default()
         .header("vlib_wrapper.h")
+        .allowlist_file("vlib_wrapper\\.h")
+        .allowlist_file(".*/vlib/init\\.h")
+        .allowlist_file(".*/vlib/main\\.h")
         .allowlist_file(".*/vlib/unix/plugin\\.h")
         .allowlist_file(".*/vppinfra/error\\.h")
         .allowlist_file(".*/vppinfra/error_bootstrap\\.h")
