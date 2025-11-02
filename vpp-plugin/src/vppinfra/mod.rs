@@ -3,6 +3,7 @@
 //! This module contains abstractions around VPP's core library, `vppinfra`, including
 //! vectors and utilities.
 
+pub mod cache;
 pub mod error;
 pub mod vec;
 
@@ -24,4 +25,52 @@ pub fn clib_mem_init() {
             crate::bindings::clib_mem_init(std::ptr::null_mut(), 3 << 30);
         }
     });
+}
+
+/// Hints to the compiler that the given code path is cold, i.e., unlikely to be executed.
+// until std::hint::cold_path is stabilised
+#[cold]
+pub const fn cold_path() {}
+
+/// Hints to the compiler that the given boolean expression is likely to be true
+///
+/// See also [`cold_path`] and [`unlikely`].
+// until std::hint::likely is stabilised
+#[inline(always)]
+pub const fn likely(b: bool) -> bool {
+    if b {
+        true
+    } else {
+        cold_path();
+        false
+    }
+}
+
+/// Hints to the compiler that the given boolean expression is unlikely to be true
+///
+/// See also [`likely`].
+// until std::hint::unlikely is stabilised
+#[inline(always)]
+pub const fn unlikely(b: bool) -> bool {
+    if b {
+        cold_path();
+        true
+    } else {
+        false
+    }
+}
+
+/// Compile-time assertion
+///
+/// Evaluates the given expression at compile time, causing a compilation error if it
+/// evaluates to false.
+#[macro_export]
+macro_rules! const_assert {
+    ($x:expr $(,)?) => {
+        #[allow(unknown_lints, eq_op)]
+        const _: [(); 0 - !{
+            const ASSERT: bool = $x;
+            ASSERT
+        } as usize] = [];
+    };
 }

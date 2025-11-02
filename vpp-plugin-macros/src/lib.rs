@@ -247,3 +247,587 @@ pub fn vlib_init_function(_attribute: TokenStream, function: TokenStream) -> Tok
         panic!("#[vlib_init_function] items must be functions");
     }
 }
+
+/// Derives the NextNodes trait for a VPP next node enum
+///
+/// Only unit variants are allowed and they must not have explicit values.
+///
+/// # Attributes
+///
+/// - Each variant must have a `#[next_node = "<node-name>"]` attribute, where `<node-name>` is
+///   the name of a VPP node.
+///
+/// # Examples
+///
+/// ```
+/// # use vpp_plugin::NextNodes;
+/// #[derive(NextNodes)]
+/// enum ExampleNextNode {
+///     #[next_node = "drop"]
+///    Drop,
+/// }
+/// ```
+#[proc_macro_derive(NextNodes, attributes(next_node))]
+pub fn derive_next_nodes(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    let syn::DeriveInput { ident, data, .. } = input;
+    if let syn::Data::Enum(data) = data {
+        let mut next_nodes = vec![];
+        for variant in &data.variants {
+            if let Some((_, exp_discriminant)) = &variant.discriminant {
+                return syn::Error::new_spanned(
+                    exp_discriminant,
+                    "Use of explicit discriminants not allowed",
+                )
+                .into_compile_error()
+                .into();
+            }
+            if !matches!(variant.fields, syn::Fields::Unit) {
+                return syn::Error::new_spanned(&variant.fields, "Only unit variants can be used")
+                    .into_compile_error()
+                    .into();
+            }
+            let next_node_attr = variant
+                .attrs
+                .iter()
+                .find(|x| x.path().is_ident("next_node"))
+                .expect("Missing attribute \"next_node\"");
+            let syn::Meta::NameValue(next_node_name_value) = &next_node_attr.meta else {
+                return syn::Error::new_spanned(next_node_attr, "Unsupported \"next_node\" attribute syntax. Should be #[next_node = \"<node-name>\".").into_compile_error().into();
+            };
+            let syn::Expr::Lit(next_node) = &next_node_name_value.value else {
+                return syn::Error::new_spanned(next_node_name_value, "Unsupported \"next_node\" attribute syntax. Should be #[next_node = \"<node-name>\".").into_compile_error().into();
+            };
+            let syn::Lit::Str(next_node) = &next_node.lit else {
+                return syn::Error::new_spanned(next_node, "Unsupported \"next_node\" attribute syntax. Should be #[next_node = \"<node-name>\".").into_compile_error().into();
+            };
+            next_nodes.push(format!("{}\0", next_node.value()));
+        }
+        let n_next_nodes = data.variants.len();
+
+        let output = quote!(
+            #[automatically_derived]
+            unsafe impl ::vpp_plugin::vlib::node::NextNodes for #ident {
+                type CNamesArray = [*mut ::std::os::raw::c_char; #n_next_nodes];
+                const C_NAMES: Self::CNamesArray = [#(#next_nodes.as_ptr() as *mut ::std::os::raw::c_char),*];
+
+                fn into_u16(self) -> u16 {
+                    self as u16
+                }
+            }
+        );
+
+        // eprintln!("{}", output);
+
+        output.into()
+    } else {
+        panic!("#[derive(NextNodes)] can only be used on enums");
+    }
+}
+
+struct ErrorCounterAttribute {
+    name: Option<String>,
+    description: String,
+    severity: syn::Ident,
+}
+
+impl syn::parse::Parse for ErrorCounterAttribute {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        const VALID_SEVERITIES: &[&str] = &["INFO", "WARNING", "ERROR", "CRITICAL"];
+
+        let mut name_or_description_kw = syn::Ident::parse(input)?;
+
+        let name = if name_or_description_kw == "name" {
+            input.parse::<syn::Token![=]>()?;
+            let name = <syn::LitStr as syn::parse::Parse>::parse(input)?.value();
+            input.parse::<syn::Token![,]>()?;
+            name_or_description_kw = syn::Ident::parse(input)?;
+            Some(name)
+        } else {
+            None
+        };
+
+        if name_or_description_kw != "description" {
+            return Err(syn::Error::new(
+                name_or_description_kw.span(),
+                "Expected: description = \"<...>\", severity = <severity>".to_string(),
+            ));
+        }
+
+        input.parse::<syn::Token![=]>()?;
+        let description = <syn::LitStr as syn::parse::Parse>::parse(input)?.value();
+
+        input.parse::<syn::Token![,]>()?;
+
+        let severity_kw = syn::Ident::parse(input)?;
+
+        if severity_kw != "severity" {
+            return Err(syn::Error::new(
+                severity_kw.span(),
+                "Expected: description = \"<...>\", severity = <severity>".to_string(),
+            ));
+        }
+
+        input.parse::<syn::Token![=]>()?;
+        let severity = syn::Ident::parse(input)?;
+        if !VALID_SEVERITIES.contains(&severity.to_string().as_str()) {
+            return Err(syn::Error::new(
+                severity.span(),
+                format!(
+                    "Invalid severity \"{}\". Valid severities are: {:?}.",
+                    severity, VALID_SEVERITIES
+                ),
+            ));
+        }
+
+        Ok(Self {
+            name,
+            description,
+            severity,
+        })
+    }
+}
+
+/// Derives the ErrorCounters trait for a VPP error counter enum
+///
+/// Only unit variants are allowed and they must not have explicit values.
+///
+/// # Attributes
+///
+/// Each variant must have a `#[error_counter(...)]` attribute, with the following key-value pairs:
+/// - `name = "<name>"`: (optional) The name of the error counter. If not provided, the variant name will be used.
+/// - `description = "<description>"`: (required) A description of the error counter
+/// - `severity = <severity>`: (required) The severity of the error counter. Must be one of
+///   `INFO`, `WARNING`, `ERROR`, or `CRITICAL`.
+///
+/// # Examples
+///
+/// ```
+/// # use vpp_plugin::ErrorCounters;
+/// #[derive(ErrorCounters)]
+/// enum ExampleErrors {
+///     #[error_counter(name = "drop", description = "Example drop", severity = ERROR)]
+///     Drop,
+/// }
+/// ```
+#[proc_macro_derive(ErrorCounters, attributes(error_counter))]
+pub fn derive_error_counters(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    let syn::DeriveInput { ident, data, .. } = input;
+    if let syn::Data::Enum(data) = data {
+        let mut error_counter_desc = vec![];
+        for variant in &data.variants {
+            if let Some((_, exp_discriminant)) = &variant.discriminant {
+                return syn::Error::new_spanned(
+                    exp_discriminant,
+                    "Use of explicit discriminants not allowed",
+                )
+                .into_compile_error()
+                .into();
+            }
+            if !matches!(variant.fields, syn::Fields::Unit) {
+                return syn::Error::new_spanned(&variant.fields, "Only unit variants can be used")
+                    .into_compile_error()
+                    .into();
+            }
+            let error_counter_attr = variant
+                .attrs
+                .iter()
+                .find(|x| x.path().is_ident("error_counter"))
+                .expect("Missing attribute \"error_counter\"");
+            let syn::Meta::List(error_counter_list) = &error_counter_attr.meta else {
+                return syn::Error::new_spanned(error_counter_attr, "Unsupported \"error_counter\" attribute syntax. Should be #[error_counter(description = \"...\")]").into_compile_error().into();
+            };
+            let ErrorCounterAttribute {
+                name,
+                description,
+                severity,
+            } = match syn::parse2::<ErrorCounterAttribute>(error_counter_list.tokens.clone()) {
+                Ok(v) => v,
+                Err(e) => return proc_macro::TokenStream::from(e.to_compile_error()),
+            };
+            let name = if let Some(name) = name {
+                format!("{}\0", name)
+            } else {
+                format!("{}\0", variant.ident)
+            };
+            let description = format!("{}\0", description);
+            let severity = syn::parse_str::<syn::Ident>(&format!(
+                "vl_counter_severity_e_VL_COUNTER_SEVERITY_{}",
+                severity
+            ))
+            .expect("Unable to create identifier");
+
+            error_counter_desc.push(quote!(
+                ::vpp_plugin::bindings::vlib_error_desc_t {
+                    name: #name.as_ptr() as *mut std::ffi::c_char,
+                    desc: #description.as_ptr() as *mut std::ffi::c_char,
+                    severity: ::vpp_plugin::bindings::#severity,
+                    stats_entry_index: 0,
+                },
+            ));
+        }
+        let n_error_counters = data.variants.len();
+
+        let output = quote!(
+            #[automatically_derived]
+            unsafe impl ::vpp_plugin::vlib::node::ErrorCounters for #ident {
+                type CDescriptionsArray = [::vpp_plugin::bindings::vlib_error_desc_t; #n_error_counters];
+                const C_DESCRIPTIONS: Self::CDescriptionsArray = [
+                    #(#error_counter_desc)*
+                ];
+
+                fn into_u16(self) -> u16 {
+                    self as u16
+                }
+            }
+        );
+
+        // eprintln!("{}", output);
+
+        output.into()
+    } else {
+        panic!("#[derive(ErrorCounters)] can only be used on enums");
+    }
+}
+
+const CPU_MARCH_TO_CPU_AND_TARGET_FEATURE: &[(&str, Option<&str>, Option<&str>)] = &[
+    ("scalar", None, None),
+    ("hsw", Some("x86_64"), Some("avx2")),
+];
+
+#[derive(Default)]
+struct Node {
+    name: Option<syn::LitStr>,
+    instance: Option<syn::Ident>,
+    runtime_data_default: Option<syn::Ident>,
+    format_trace: Option<syn::Ident>,
+}
+
+impl Node {
+    fn parse(&mut self, meta: syn::meta::ParseNestedMeta) -> Result<(), syn::Error> {
+        const EXPECTED_KEYS: &[&str] =
+            &["name", "instance", "runtime_data_default", "format_trace"];
+
+        if meta.path.is_ident("name") {
+            self.name = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("instance") {
+            self.instance = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("runtime_data_default") {
+            self.runtime_data_default = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("format_trace") {
+            self.format_trace = Some(meta.value()?.parse()?);
+            Ok(())
+        } else {
+            Err(syn::Error::new(
+                meta.path.span(),
+                format!(
+                    "Unknown attribute \"{:?}\". Valid keys are: {EXPECTED_KEYS:?}.",
+                    meta.path.get_ident()
+                ),
+            ))
+        }
+    }
+}
+
+/// Registers a VPP node and associated function
+///
+/// This registers an internal VPP node, which is the most common type of node (as opposed to
+/// processing or input nodes).
+///
+/// In addition, node functions are also registered, compiled for multiple CPU architectures and
+/// target features to allow VPP to select the optimal implementation for the current CPU. This
+/// only has an effect for code inlined into the node functions. In other words, `Node::function`
+/// should be marked as `#[inline(always)]` and any other functions directly or indirectly called
+/// in performance-critical paths should be similarly marked.
+///
+/// # Attributes
+///
+/// The macro takes key-value attributes as follows:
+/// - `name`: (required, string literal) The name of the VPP node.
+/// - `instance`: (required, ident) The instance of the node.
+/// - `runtime_data_default`: (optional, ident) An identifier for a constant value of type
+///   `Node::RuntimeData` to use as the default runtime data for this node.
+/// - `format_trace`: (optional, ident) An identifier for a function with the signature
+///   `fn(&mut MainRef, &mut NodeRef<...>, &TraceData) -> String` to format trace
+///   data for this node.
+///
+/// # Examples
+///
+/// ```
+/// # use std::fmt;
+/// # use vpp_plugin::{vlib::{self, node::Node}, vlib_node, ErrorCounters, NextNodes};
+/// #[derive(Copy, Clone)]
+/// struct ExampleTrace;
+///
+/// impl fmt::Display for ExampleTrace {
+///     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+///         Ok(())
+///     }
+/// }
+///
+/// fn format_example_trace(
+///     _vm: &mut vlib::MainRef,
+///     _node: &mut vlib::NodeRef<ExampleNode>,
+///     t: &ExampleTrace,
+/// ) -> String {
+///     t.to_string()
+/// }
+/// # #[derive(NextNodes)]
+/// # enum ExampleNextNode {
+/// #     #[next_node = "drop"]
+/// #    _Drop,
+/// # }
+/// # #[derive(ErrorCounters)]
+/// # enum ExampleErrorCounter {
+/// #     #[error_counter(description = "Drops", severity = ERROR)]
+/// #     _Drop,
+/// # }
+///
+/// static EXAMPLE_NODE: ExampleNode = ExampleNode::new();
+///
+/// #[vlib_node(
+///     name = "example",
+///     instance = EXAMPLE_NODE,
+///     format_trace = format_example_trace,
+/// )]
+/// struct ExampleNode;
+///
+/// impl ExampleNode {
+///     const fn new() -> Self {
+///         Self
+///     }
+/// }
+///
+/// impl vlib::node::Node for ExampleNode {
+///     type Vector = ();
+///     type Scalar = ();
+///     type Aux = ();
+///
+///     type NextNodes = ExampleNextNode;
+///     type RuntimeData = ();
+///     type TraceData = ExampleTrace;
+///     type Errors = ExampleErrorCounter;
+///     type FeatureData = ();
+///
+///     #[inline(always)]
+///     unsafe fn function(
+///         &self,
+///         _vm: &mut vlib::MainRef,
+///         _node: &mut vlib::NodeRuntimeRef<ExampleNode>,
+///         _frame: &mut vlib::FrameRef<Self>,
+///     ) -> u16 {
+///         todo!()
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn vlib_node(attributes: TokenStream, s: TokenStream) -> TokenStream {
+    let mut attrs = Node::default();
+    let node_parser = syn::meta::parser(|meta| attrs.parse(meta));
+    syn::parse_macro_input!(attributes with node_parser);
+    let Node {
+        name,
+        instance,
+        runtime_data_default,
+        format_trace,
+    } = attrs;
+    let item: syn::Item = syn::parse_macro_input!(s);
+    if let syn::Item::Struct(syn::ItemStruct {
+        attrs,
+        vis,
+        struct_token,
+        ident,
+        generics,
+        fields,
+        semi_token,
+    }) = item
+    {
+        let name = name.expect("Missing attribute \"name\". This is required.");
+        let name_lit = format!("{}\0", name.value());
+        let instance = instance.expect("Missing attribute \"instance\". This is required.");
+        let reg_ident =
+            syn::parse_str::<syn::Ident>(format!("{}_NODE_REGISTRATION", ident).as_ref())
+                .expect("Unable to create identifier");
+        let add_node_fn_ident = syn::parse_str::<syn::Ident>(
+            format!("__vlib_add_node_registration_{}", ident).as_ref(),
+        )
+        .expect("Unable to create identifier");
+        let rm_node_fn_ident =
+            syn::parse_str::<syn::Ident>(format!("__vlib_rm_node_registration_{}", ident).as_ref())
+                .expect("Unable to create identifier");
+        let (format_trace_output, format_trace) = match format_trace {
+            Some(format_trace) => {
+                let thunk_format_trace =
+                    syn::parse_str::<syn::Ident>(format!("__{}", format_trace).as_ref())
+                        .expect("Unable to create identifier");
+                (
+                    quote!(
+                        unsafe extern "C" fn #thunk_format_trace(s: *mut u8, args: *mut ::vpp_plugin::bindings::va_list) -> *mut u8 {
+                            let mut args = std::mem::transmute::<_, ::vpp_plugin::macro_support::va_list::VaList<'_>>(args);
+                            let vm = args.get::<*const ::vpp_plugin::bindings::vlib_main_t>().cast_mut();
+                            let node = args.get::<*const ::vpp_plugin::bindings::vlib_node_t>().cast_mut();
+                            let t = args.get::<*const <#ident as ::vpp_plugin::vlib::node::Node>::TraceData>();
+                            let str = #format_trace(&mut ::vpp_plugin::vlib::MainRef::from_ptr_mut(vm), &mut #reg_ident.node_from_ptr(node), &*t);
+                            let mut s = ::vpp_plugin::vppinfra::vec::Vec::from_raw(s);
+                            s.extend(str.as_bytes());
+                            s.into_raw()
+                        }
+                    ),
+                    quote!(Some(#thunk_format_trace)),
+                )
+            }
+            None => (quote!(), quote!(None)),
+        };
+        let runtime_data = match runtime_data_default {
+            Some(runtime_data_default) => {
+                // It would be ideal to use #runtime_data::default() here, but we cannot call that in a const context and we need to here
+                quote!(::std::ptr::addr_of!(#runtime_data_default) as *mut ::std::os::raw::c_void)
+            }
+            None => quote!({
+                ::vpp_plugin::const_assert!(::std::mem::size_of::<<#ident as ::vpp_plugin::vlib::node::Node>::RuntimeData>() == 0);
+                std::ptr::null_mut()
+            }),
+        };
+
+        let mut march_outputs = vec![];
+
+        for (cpu_march, cpu, target_feature) in CPU_MARCH_TO_CPU_AND_TARGET_FEATURE {
+            let raw_node_fn_ident =
+                syn::parse_str::<syn::Ident>(format!("__{}_{}", ident, cpu_march).as_ref())
+                    .expect("Unable to create identifier");
+            let registration_ident = syn::parse_str::<syn::Ident>(
+                format!("{}_FN_REGISTRATION_{}", ident, cpu_march).as_ref(),
+            )
+            .expect("Unable to create identifier");
+            let reg_fn_ident = syn::parse_str::<syn::Ident>(
+                format!("{}_multiarch_register_{}", ident, cpu_march).as_ref(),
+            )
+            .expect("Unable to create identifier");
+            let march_variant_ident = syn::parse_str::<syn::Ident>(
+                format!(
+                    "clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_{}",
+                    cpu_march
+                )
+                .as_ref(),
+            )
+            .expect("Unable to create identifier");
+            let cpu_condition = if let Some(cpu) = cpu {
+                quote!(#[cfg(target_arch = #cpu)])
+            } else {
+                quote!()
+            };
+            let target_feature = if let Some(target_feature) = target_feature {
+                quote!(#[target_feature(enable = #target_feature)])
+            } else {
+                quote!()
+            };
+
+            let output = quote!(
+                #cpu_condition
+                #target_feature
+                #[doc(hidden)]
+                unsafe extern "C" fn #raw_node_fn_ident(
+                    vm: *mut ::vpp_plugin::bindings::vlib_main_t,
+                    node: *mut ::vpp_plugin::bindings::vlib_node_runtime_t,
+                    frame: *mut ::vpp_plugin::bindings::vlib_frame_t,
+                ) -> ::vpp_plugin::bindings::uword {
+                    unsafe {
+                        <#ident as ::vpp_plugin::vlib::node::Node>::function(
+                            &#instance,
+                            ::vpp_plugin::vlib::MainRef::from_ptr_mut(vm),
+                            #reg_ident.node_runtime_from_ptr(node),
+                            #reg_ident.frame_from_ptr(frame),
+                        )
+                    }.into()
+                }
+
+                #cpu_condition
+                #[doc(hidden)]
+                static mut #registration_ident: ::vpp_plugin::bindings::vlib_node_fn_registration_t = ::vpp_plugin::bindings::vlib_node_fn_registration_t{
+                    function: Some(#raw_node_fn_ident),
+                    march_variant: ::vpp_plugin::bindings::#march_variant_ident,
+                    next_registration: std::ptr::null_mut(),
+                };
+
+                #cpu_condition
+                #[doc(hidden)]
+                #[::vpp_plugin::macro_support::ctor::ctor(crate_path = ::vpp_plugin::macro_support::ctor)]
+                fn #reg_fn_ident() {
+                    unsafe {
+                        #reg_ident.register_node_fn(std::ptr::addr_of!(#registration_ident).cast_mut());
+                    }
+                }
+            );
+            march_outputs.push(output);
+        }
+
+        let output = quote!(
+            #(#attrs)*
+            #vis #struct_token #ident #generics #fields #semi_token
+
+            #[::vpp_plugin::macro_support::ctor::ctor(crate_path = ::vpp_plugin::macro_support::ctor)]
+            fn #add_node_fn_ident() {
+                unsafe {
+                    #reg_ident.register();
+                }
+            }
+
+            #[::vpp_plugin::macro_support::ctor::dtor(crate_path = ::vpp_plugin::macro_support::ctor)]
+            fn #rm_node_fn_ident() {
+                unsafe {
+                    #reg_ident.unregister();
+                }
+            }
+
+            #format_trace_output
+
+            static #reg_ident: ::vpp_plugin::vlib::node::NodeRegistration<#ident, { <<#ident as ::vpp_plugin::vlib::node::Node>::NextNodes as ::vpp_plugin::vlib::node::NextNodes>::C_NAMES.len() } > = ::vpp_plugin::vlib::node::NodeRegistration::new(
+                ::vpp_plugin::bindings::_vlib_node_registration {
+                    function: None,
+                    name: #name_lit.as_ptr() as *mut ::std::os::raw::c_char,
+                    type_: ::vpp_plugin::bindings::vlib_node_type_t_VLIB_NODE_TYPE_INTERNAL,
+                    error_counters: <<#ident as ::vpp_plugin::vlib::node::Node>::Errors as ::vpp_plugin::vlib::node::ErrorCounters>::C_DESCRIPTIONS.as_ptr().cast_mut(),
+                    format_trace: #format_trace,
+                    runtime_data: #runtime_data,
+                    runtime_data_bytes: {
+                        ::vpp_plugin::const_assert!(::std::mem::size_of::<<ExampleNode as ::vpp_plugin::vlib::node::Node>::RuntimeData>() <= u8::MAX as usize);
+                        ::vpp_plugin::const_assert!(::std::mem::align_of::<<ExampleNode as ::vpp_plugin::vlib::node::Node>::RuntimeData>() <= ::vpp_plugin::vlib::node::RUNTIME_DATA_ALIGN);
+                        ::std::mem::size_of::<<#ident as ::vpp_plugin::vlib::node::Node>::RuntimeData>() as u8
+                    },
+                    vector_size: {
+                        ::vpp_plugin::const_assert!(::std::mem::size_of::<<ExampleNode as ::vpp_plugin::vlib::node::Node>::Vector>() <= u8::MAX as usize);
+                        ::vpp_plugin::const_assert!(::std::mem::align_of::<<ExampleNode as ::vpp_plugin::vlib::node::Node>::Vector>() <= ::vpp_plugin::vlib::node::FRAME_DATA_ALIGN);
+                        ::std::mem::size_of::<<#ident as ::vpp_plugin::vlib::node::Node>::Vector>() as u8
+                    },
+                    aux_size: {
+                        ::vpp_plugin::const_assert!(::std::mem::size_of::<<ExampleNode as ::vpp_plugin::vlib::node::Node>::Aux>() <= u8::MAX as usize);
+                        ::vpp_plugin::const_assert!(::std::mem::align_of::<<ExampleNode as ::vpp_plugin::vlib::node::Node>::Aux>() <= ::vpp_plugin::vlib::node::FRAME_DATA_ALIGN);
+                        ::std::mem::size_of::<<#ident as ::vpp_plugin::vlib::node::Node>::Aux>() as u8
+                    },
+                    scalar_size: {
+                        ::vpp_plugin::const_assert!(::std::mem::size_of::<<ExampleNode as ::vpp_plugin::vlib::node::Node>::Scalar>() <= u16::MAX as usize);
+                        ::vpp_plugin::const_assert!(::std::mem::align_of::<<ExampleNode as ::vpp_plugin::vlib::node::Node>::Scalar>() <= ::vpp_plugin::vlib::node::FRAME_DATA_ALIGN);
+                        ::std::mem::size_of::<<#ident as ::vpp_plugin::vlib::node::Node>::Scalar>() as u16
+                    },
+                    n_errors: <<#ident as ::vpp_plugin::vlib::node::Node>::Errors as ::vpp_plugin::vlib::node::ErrorCounters>::C_DESCRIPTIONS.len()
+                        as u16,
+                    n_next_nodes: <<#ident as ::vpp_plugin::vlib::node::Node>::NextNodes as ::vpp_plugin::vlib::node::NextNodes>::C_NAMES.len()
+                        as u16,
+                    next_nodes: <<#ident as ::vpp_plugin::vlib::node::Node>::NextNodes as ::vpp_plugin::vlib::node::NextNodes>::C_NAMES,
+                    ..::vpp_plugin::bindings::_vlib_node_registration::new()
+                });
+
+            #(#march_outputs)*
+        );
+
+        // eprintln!("{}", output);
+
+        output.into()
+    } else {
+        panic!("#[vlib_node] items must be structs");
+    }
+}

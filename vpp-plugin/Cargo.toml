@@ -10,12 +10,18 @@ license = "Apache-2.0"
 keywords = ["vpp"]
 categories = ["api-bindings", "network-programming"]
 
+[features]
+experimental = []
+
 [build-dependencies]
 bindgen = "0.72.0"
 cc = "1"
 
 [dependencies]
+arrayvec = "0.7.6"
 bitflags = "2.9.4"
 ctor = "0.5.0"
 foreign-types = "0.5"
+# In lieu of https://github.com/rust-lang/rust/issues/44930
+va_list = "0.2.1"
 vpp-plugin-macros = { version = "0.1.0", path = "../vpp-plugin-macros" }
