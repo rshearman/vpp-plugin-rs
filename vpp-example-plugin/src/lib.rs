@@ -35,7 +35,7 @@ use vpp_plugin::{
         node_generic::{generic_feature_node_x1, FeatureNextNode, GenericFeatureNodeX1},
         BufferIndex,
     },
-    vlib_init_function, vlib_node, vlib_plugin_register,
+    vlib_init_function, vlib_node, vlib_plugin_register, vnet_feature_init,
     vppinfra::{error::ErrorStack, unlikely},
     ErrorCounters, NextNodes,
 };
@@ -130,6 +130,12 @@ impl vlib::node::Node for ExampleNode {
         }
         generic_feature_node_x1(vm, node, frame, Impl)
     }
+}
+
+vnet_feature_init! {
+    identifier: EXAMPLE_FEAT,
+    arc_name: "ip4-unicast",
+    node: ExampleNode,
 }
 
 #[vlib_init_function]

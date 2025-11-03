@@ -831,3 +831,231 @@ pub fn vlib_node(attributes: TokenStream, s: TokenStream) -> TokenStream {
         panic!("#[vlib_node] items must be structs");
     }
 }
+
+struct FeatureInit {
+    identifier: Option<syn::Ident>,
+    arc_name: Option<String>,
+    node: Option<syn::Ident>,
+    runs_before: Vec<String>,
+    runs_after: Vec<String>,
+    feature_data_type: Option<syn::Type>,
+}
+
+impl syn::parse::Parse for FeatureInit {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        const EXPECTED_KEYS: &[&str] = &[
+            "identifier",
+            "arc_name",
+            "node",
+            "runs_before",
+            "runs_after",
+            "feature_data_type",
+        ];
+
+        let mut info = FeatureInit {
+            identifier: None,
+            arc_name: None,
+            node: None,
+            runs_before: Vec::new(),
+            runs_after: Vec::new(),
+            feature_data_type: None,
+        };
+        let mut seen_keys = HashSet::new();
+        loop {
+            if input.is_empty() {
+                break;
+            }
+            let key = syn::Ident::parse(input)?.to_string();
+
+            if seen_keys.contains(&key) {
+                panic!("Duplicated key \"{key}\". Keys can only be specified once.");
+            }
+
+            input.parse::<syn::Token![:]>()?;
+
+            match key.as_str() {
+                "identifier" => info.identifier = Some(syn::Ident::parse(input)?),
+                "arc_name" => {
+                    info.arc_name = Some(<syn::LitStr as syn::parse::Parse>::parse(input)?.value())
+                }
+                "node" => info.node = Some(syn::Ident::parse(input)?),
+                "runs_before" => {
+                    let runs_before_input;
+                    syn::bracketed!(runs_before_input in input);
+                    let runs_before = syn::punctuated::Punctuated::<syn::LitStr, syn::Token![,]>::parse_terminated(&runs_before_input)?;
+                    info.runs_before = runs_before.into_iter().map(|s| s.value()).collect();
+                }
+                "runs_after" => {
+                    let runs_after_input;
+                    syn::bracketed!(runs_after_input in input);
+                    let runs_after = syn::punctuated::Punctuated::<syn::LitStr, syn::Token![,]>::parse_terminated(&runs_after_input)?;
+                    info.runs_after = runs_after.into_iter().map(|s| s.value()).collect();
+                }
+                "feature_data_type" => info.feature_data_type = Some(syn::Type::parse(input)?),
+                _ => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        format!("Unknown key \"{key}\". Valid keys are: {EXPECTED_KEYS:?}."),
+                    ))
+                }
+            }
+
+            input.parse::<syn::Token![,]>()?;
+
+            seen_keys.insert(key);
+        }
+        Ok(info)
+    }
+}
+
+/// Registers a VPP feature
+///
+/// Allowing the VPP node to be executed in a feature arc. Note that the feature won't be
+/// executed until enabled.
+///
+/// # Attributes
+///
+/// Each variant must have a `#[error_counter(...)]` attribute, with the following key-value pairs:
+/// - `identifier = <ident>`: (required) An identifier of a static of type
+///   `vpp_plugin::vnet::feature::FeatureRegistration` that will be declared and registered by
+///   the macro.
+/// - `arc_name = "<name>"`: (required, string literal) The name of the feature arc the node will
+///   be registered to.
+/// - `node = <ident>`: (required, string literal) The name of a node type registered using
+///   [`vlib_node`].
+/// - `runs_before = [("<feature-name>")*]`: (optional, string literal) A list of features that
+///   should be executed in the feature arc before this feature is executed.
+/// - `runs_after = [("<feature-name>")*]`: (optional, string literal) A list of features that
+///   should be executed in the feature arc after this feature is executed.
+///
+/// # Examples
+///
+/// ```
+/// # use vpp_plugin::{vlib::{self, node::Node}, vlib_node, vnet_feature_init, ErrorCounters, NextNodes};
+/// # #[derive(NextNodes)]
+/// # enum ExampleNextNode {
+/// #     #[next_node = "drop"]
+/// #    _Drop,
+/// # }
+/// # #[derive(ErrorCounters)]
+/// # enum ExampleErrorCounter {}
+/// #
+/// # static EXAMPLE_NODE: ExampleNode = ExampleNode::new();
+/// #
+/// #[vlib_node(
+///     name = "example",
+///     instance = EXAMPLE_NODE,
+/// )]
+/// struct ExampleNode;
+///
+/// // ...
+///
+/// # impl ExampleNode {
+/// #     const fn new() -> Self {
+/// #         Self
+/// #     }
+/// # }
+/// # impl vlib::node::Node for ExampleNode {
+/// #     type Vector = ();
+/// #     type Scalar = ();
+/// #     type Aux = ();
+/// #
+/// #     type NextNodes = ExampleNextNode;
+/// #     type RuntimeData = ();
+/// #     type TraceData = ();
+/// #     type Errors = ExampleErrorCounter;
+/// #     type FeatureData = ();
+/// #
+/// #     #[inline(always)]
+/// #     unsafe fn function(
+/// #         &self,
+/// #         _vm: &mut vlib::MainRef,
+/// #         _node: &mut vlib::NodeRuntimeRef<Self>,
+/// #         _frame: &mut vlib::FrameRef<Self>,
+/// #     ) -> u16 {
+/// #         todo!()
+/// #     }
+/// # }
+/// vnet_feature_init! {
+///     identifier: EXAMPLE_FEAT,
+///     arc_name: "ip4-unicast",
+///     node: ExampleNode,
+///     runs_before: ["ip4-flow-classify"],
+///     runs_after: ["ip4-sv-reassembly-feature"],
+/// }
+/// ```
+#[proc_macro]
+pub fn vnet_feature_init(ts: TokenStream) -> TokenStream {
+    let FeatureInit {
+        identifier,
+        arc_name,
+        node,
+        runs_before,
+        runs_after,
+        feature_data_type,
+    } = syn::parse_macro_input!(ts as FeatureInit);
+
+    let ident = identifier.expect("Missing key \"identifier\". This is required.");
+    let ctor_fn_ident =
+        syn::parse_str::<syn::Ident>(format!("__vnet_add_feature_registration_{}", ident).as_ref())
+            .expect("Unable to create identifier");
+    let dtor_fn_ident =
+        syn::parse_str::<syn::Ident>(format!("__vnet_rm_feature_registration_{}", ident).as_ref())
+            .expect("Unable to create identifier");
+    let arc_name = arc_name.expect("Missing key \"arc_name\". This is required.");
+    let node = node.expect("Missing key \"node\". This is required.");
+    let reg_ident = syn::parse_str::<syn::Ident>(format!("{}_NODE_REGISTRATION", node).as_ref())
+        .expect("Unable to create identifier");
+    let arc_name_lit = format!("{arc_name}\0");
+    let runs_before_output = if runs_before.is_empty() {
+        quote!(std::ptr::null_mut())
+    } else {
+        let runs_before = runs_before.iter().map(|s| {
+            let s = format!("{s}\0");
+            quote!(#s.as_ptr() as *mut ::std::os::raw::c_char)
+        });
+        quote!(&[#(#runs_before),*, std::ptr::null_mut()] as *const *mut ::std::os::raw::c_char as *mut *mut ::std::os::raw::c_char)
+    };
+    let runs_after_output = if runs_after.is_empty() {
+        quote!(std::ptr::null_mut())
+    } else {
+        let runs_after = runs_after.iter().map(|s| {
+            let s = format!("{s}\0");
+            quote!(#s.as_ptr() as *mut ::std::os::raw::c_char)
+        });
+        quote!(&[#(#runs_after),*, std::ptr::null_mut()] as *const *mut ::std::os::raw::c_char as *mut *mut ::std::os::raw::c_char)
+    };
+    let feature_data_type = feature_data_type
+        .unwrap_or_else(|| syn::parse_str::<syn::Type>("()").expect("Unable to create identifier"));
+
+    let output = quote!(
+        #[doc(hidden)]
+        #[::vpp_plugin::macro_support::ctor::ctor(crate_path = ::vpp_plugin::macro_support::ctor)]
+        fn #ctor_fn_ident() {
+            unsafe { #ident.register(); }
+        }
+
+        #[doc(hidden)]
+        #[::vpp_plugin::macro_support::ctor::dtor(crate_path = ::vpp_plugin::macro_support::ctor)]
+        fn #dtor_fn_ident() {
+            unsafe { #ident.unregister(); }
+        }
+
+        static #ident: ::vpp_plugin::vnet::feature::FeatureRegistration<#feature_data_type> = unsafe {
+            ::vpp_plugin::vnet::feature::FeatureRegistration::new(
+                ::vpp_plugin::bindings::vnet_feature_registration_t {
+                    arc_name: #arc_name_lit.as_ptr() as *mut ::std::os::raw::c_char,
+                    runs_before: #runs_before_output,
+                    runs_after: #runs_after_output,
+                    enable_disable_cb: None,
+                    ..::vpp_plugin::bindings::vnet_feature_registration_t::new()
+                },
+                &#reg_ident,
+            )
+        };
+    );
+
+    // eprintln!("{}", output);
+
+    output.into()
+}

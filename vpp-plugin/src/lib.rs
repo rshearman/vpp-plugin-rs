@@ -31,5 +31,6 @@ pub mod vppinfra;
 
 // Re-export macros for convenience
 pub use vpp_plugin_macros::{
-    vlib_init_function, vlib_node, vlib_plugin_register, ErrorCounters, NextNodes,
+    vlib_init_function, vlib_node, vlib_plugin_register, vnet_feature_init, ErrorCounters,
+    NextNodes,
 };

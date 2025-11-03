@@ -198,3 +198,13 @@ impl<const N: usize> _vlib_node_registration<[*mut ::std::os::raw::c_char; N]> {
         }
     }
 }
+
+impl vnet_feature_registration_t {
+    pub const fn new() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}

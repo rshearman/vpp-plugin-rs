@@ -5,6 +5,7 @@
 
 pub mod cache;
 pub mod error;
+pub mod unformat;
 pub mod vec;
 
 pub use vec::{Vec, VecRef};
