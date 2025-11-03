@@ -1,0 +1,10 @@
+/*
+ * File comment
+ */
+option version = "1.0.0";
+
+autoendian autoreply define variable_array {
+    u32 client_index;
+    u32 context;
+    u64 configs[nitems];
+};

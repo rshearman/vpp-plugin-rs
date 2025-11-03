@@ -31,3 +31,7 @@ void *vlib_helper_feature_next_with_data(u32 * next0, vlib_buffer_t * b0, u32 n_
 
 uword vlib_helper_unformat_get_input(unformat_input_t * input);
 void vlib_helper_unformat_free(unformat_input_t * input);
+
+vl_api_registration_t *vl_api_helper_client_index_to_registration(u32 index);
+api_main_t *vlibapi_helper_get_main(void);
+void vl_api_helper_send_msg(vl_api_registration_t *rp, u8 *elem);

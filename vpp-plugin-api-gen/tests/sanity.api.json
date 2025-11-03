@@ -1,0 +1,781 @@
+{
+    "types": [
+        [
+            "address",
+            [
+                "vl_api_address_family_t",
+                "af"
+            ],
+            [
+                "vl_api_address_union_t",
+                "un"
+            ]
+        ],
+        [
+            "module_version",
+            [
+                "u8",
+                "dummy"
+            ]
+        ]
+    ],
+    "messages": [
+        [
+            "memclnt_create",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "ctx_quota"
+            ],
+            [
+                "u64",
+                "input_queue"
+            ],
+            [
+                "string",
+                "name",
+                64
+            ],
+            [
+                "u32",
+                "api_versions",
+                8
+            ],
+            {
+                "crc": "0x9c5e1c2f",
+                "options": {
+                    "deprecated": null
+                },
+                "comment": "/*\n * Create a client registration\n */"
+            }
+        ],
+        [
+            "memclnt_create_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "response"
+            ],
+            [
+                "u64",
+                "handle"
+            ],
+            [
+                "u32",
+                "index"
+            ],
+            [
+                "u64",
+                "message_table"
+            ],
+            {
+                "crc": "0x42ec4560",
+                "options": {}
+            }
+        ],
+        [
+            "string_literal",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            {
+                "crc": "0x51077d14",
+                "options": {
+                    "vat_help": "Test\\\\n"
+                },
+                "comment": "/* Test corner case of string literal */"
+            }
+        ],
+        [
+            "string_literal_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {
+                    "vat_help": "Test\\\\n"
+                }
+            }
+        ],
+        [
+            "all_types",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "u8",
+                "f0"
+            ],
+            [
+                "i8",
+                "f1"
+            ],
+            [
+                "u16",
+                "f2"
+            ],
+            [
+                "i16",
+                "f3"
+            ],
+            [
+                "u32",
+                "f4"
+            ],
+            [
+                "i32",
+                "f5"
+            ],
+            [
+                "u64",
+                "f6"
+            ],
+            [
+                "i64",
+                "f7"
+            ],
+            [
+                "f64",
+                "f8"
+            ],
+            [
+                "bool",
+                "f9"
+            ],
+            [
+                "string",
+                "f10",
+                0
+            ],
+            {
+                "crc": "0x805c14b8",
+                "options": {},
+                "comment": "/* Test use of all primitive types */"
+            }
+        ],
+        [
+            "all_types_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {}
+            }
+        ],
+        [
+            "no_return",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u8",
+                "dummy"
+            ],
+            {
+                "crc": "0xc3a3a452",
+                "options": {},
+                "comment": "/* A message that doesn't return */"
+            }
+        ],
+        [
+            "comments",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "u8",
+                "f0"
+            ],
+            [
+                "u8",
+                "f1"
+            ],
+            {
+                "crc": "0xd4c3ea6b",
+                "options": {},
+                "comment": "/* Test comments in different places */"
+            }
+        ],
+        [
+            "comments_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {}
+            }
+        ],
+        [
+            "want_interface_events",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "u32",
+                "enable_disable"
+            ],
+            [
+                "u32",
+                "pid"
+            ],
+            {
+                "crc": "0x476f5a08",
+                "options": {}
+            }
+        ],
+        [
+            "want_interface_events_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {}
+            }
+        ],
+        [
+            "sw_interface_event",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "pid"
+            ],
+            {
+                "crc": "0xbd5ff46a",
+                "options": {}
+            }
+        ],
+        [
+            "sw_interface_tx_placement_get",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            {
+                "crc": "0x51077d14",
+                "options": {}
+            }
+        ],
+        [
+            "sw_interface_tx_placement_get_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {}
+            }
+        ],
+        [
+            "sw_interface_tx_placement_details",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            {
+                "crc": "0x51077d14",
+                "options": {}
+            }
+        ],
+        [
+            "union_message",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "vl_api_address_t",
+                "address"
+            ],
+            {
+                "crc": "0xfee40e11",
+                "options": {}
+            }
+        ],
+        [
+            "union_message_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {}
+            }
+        ],
+        [
+            "variable_array",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "u8",
+                "nitems"
+            ],
+            [
+                "u64",
+                "configs",
+                0,
+                "nitems"
+            ],
+            {
+                "crc": "0x6b8730a3",
+                "options": {}
+            }
+        ],
+        [
+            "variable_array_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            [
+                "u32",
+                "count"
+            ],
+            [
+                "vl_api_module_version_t",
+                "api_versions",
+                0,
+                "count"
+            ],
+            {
+                "crc": "0xbc9c2f62",
+                "options": {}
+            }
+        ],
+        [
+            "field_option",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "bool",
+                "keepalive",
+                {
+                    "default": "true"
+                }
+            ],
+            {
+                "crc": "0x0101538d",
+                "options": {}
+            }
+        ],
+        [
+            "field_option_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {}
+            }
+        ],
+        [
+            "ip_table_dump",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            {
+                "crc": "0x51077d14",
+                "options": {}
+            }
+        ],
+        [
+            "ip_table_details",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            {
+                "crc": "0x8c1bbc26",
+                "options": {}
+            }
+        ],
+        [
+            "flags",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "vl_api_mss_clamp_dir_t",
+                "flags"
+            ],
+            {
+                "crc": "0x76c22d9e",
+                "options": {}
+            }
+        ],
+        [
+            "flags_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {}
+            }
+        ],
+        [
+            "str_request",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "string",
+                "s0",
+                64
+            ],
+            [
+                "string",
+                "s1",
+                0
+            ],
+            {
+                "crc": "0xd170b6e7",
+                "options": {}
+            }
+        ],
+        [
+            "str_request_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {}
+            }
+        ]
+    ],
+    "unions": [
+        [
+            "address_union",
+            [
+                "vl_api_ip4_address_t",
+                "ip4"
+            ],
+            [
+                "vl_api_ip6_address_t",
+                "ip6"
+            ]
+        ]
+    ],
+    "enums": [
+        [
+            "address_family",
+            [
+                "ADDRESS_IP4",
+                0
+            ],
+            [
+                "ADDRESS_IP6",
+                1
+            ],
+            {
+                "enumtype": "u8"
+            }
+        ]
+    ],
+    "enumflags": [
+        [
+            "mss_clamp_dir",
+            [
+                "MSS_CLAMP_DIR_NONE",
+                0
+            ],
+            [
+                "MSS_CLAMP_DIR_RX",
+                1
+            ],
+            [
+                "MSS_CLAMP_DIR_TX",
+                2
+            ],
+            {
+                "enumtype": "u8"
+            }
+        ]
+    ],
+    "services": {
+        "no_return": {
+            "reply": "null"
+        },
+        "want_interface_events": {
+            "reply": "want_interface_events_reply",
+            "events": [
+                "sw_interface_event"
+            ]
+        },
+        "sw_interface_tx_placement_get": {
+            "reply": "sw_interface_tx_placement_get_reply",
+            "stream": true,
+            "stream_msg": "sw_interface_tx_placement_details"
+        },
+        "memclnt_create": {
+            "reply": "memclnt_create_reply"
+        },
+        "string_literal": {
+            "reply": "string_literal_reply"
+        },
+        "all_types": {
+            "reply": "all_types_reply"
+        },
+        "comments": {
+            "reply": "comments_reply"
+        },
+        "union_message": {
+            "reply": "union_message_reply"
+        },
+        "variable_array": {
+            "reply": "variable_array_reply"
+        },
+        "field_option": {
+            "reply": "field_option_reply"
+        },
+        "ip_table_dump": {
+            "reply": "ip_table_details",
+            "stream": true
+        },
+        "flags": {
+            "reply": "flags_reply"
+        },
+        "str_request": {
+            "reply": "str_request_reply"
+        }
+    },
+    "options": {
+        "version": "1.0.0"
+    },
+    "aliases": {
+        "ip4_address": {
+            "type": "u8",
+            "length": 4
+        },
+        "ip6_address": {
+            "type": "u8",
+            "length": 16
+        }
+    },
+    "vl_api_version": "0xeabe8f26",
+    "imports": [],
+    "counters": [],
+    "paths": []
+}

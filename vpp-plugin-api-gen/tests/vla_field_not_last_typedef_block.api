@@ -1,0 +1,15 @@
+/*
+ * File comment
+ */
+option version = "1.0.0";
+
+typedef vla_type {
+    u64 configs[nitems];
+    u8 nitems;
+};
+
+autoendian autoreply define variable_array {
+    u32 client_index;
+    u32 context;
+    vl_api_vla_type_t vla;
+};

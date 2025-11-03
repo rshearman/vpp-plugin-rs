@@ -1,0 +1,18 @@
+/*
+ * File comment
+ */
+option version = "1.0.0";
+
+autoendian autoreply define sw_interface_tx_placement_get
+{
+    u32 client_index;
+    u32 context;
+    /* ... */
+};
+
+autoendian define sw_interface_tx_placement_details
+{
+    u32 client_index;
+    u32 context;
+    /* ... */
+};

@@ -1,0 +1,182 @@
+/*
+ * File comment
+ */
+option version = "1.0.0";
+
+/*
+ * Create a client registration
+ */
+define memclnt_create {
+    option deprecated;
+
+    u32 context;
+    i32 ctx_quota;
+    u64 input_queue;
+    string name[64];
+    u32 api_versions[8];
+};
+
+define memclnt_create_reply {
+    u32 context;
+    i32 response;
+    u64 handle;
+    u32 index;
+    u64 message_table;
+};
+
+/* Test corner case of string literal */
+autoreply autoendian define string_literal {
+    option vat_help = "Test\"\n";
+
+    u32 client_index;
+    u32 context;
+};
+
+/* Test use of all primitive types */
+autoreply autoendian define all_types {
+    u32 client_index;
+    u32 context;
+
+    u8 f0;
+    i8 f1;
+    u16 f2;
+    i16 f3;
+    u32 f4;
+    i32 f5;
+    u64 f6;
+    i64 f7;
+    f64 f8;
+    bool f9;
+    string f10[];
+};
+
+/* A message that doesn't return */
+autoendian define no_return {
+    u8 dummy;
+};
+
+// Test comments in different places
+/* Test comments in different places */
+autoreply /* comment */ autoendian /* comment */ define comments {
+    // Standard header fields
+    u32 client_index;
+    u32 context;
+
+    /* Comment */
+    u8 f0; /* trailing comment */
+    // Another comment
+    u8 /* comment */ f1;
+};
+
+autoreply define want_interface_events
+{
+    u32 client_index;
+    u32 context;
+    u32 enable_disable;
+    u32 pid;
+};
+
+define sw_interface_event
+{
+    u32 client_index;
+    u32 pid;
+};
+
+autoendian autoreply define sw_interface_tx_placement_get
+{
+    u32 client_index;
+    u32 context;
+    /* ... */
+};
+
+autoendian define sw_interface_tx_placement_details
+{
+    u32 client_index;
+    u32 context;
+    /* ... */
+};
+
+manual_print typedef u8 ip4_address[4];
+manual_print typedef u8 ip6_address[16];
+
+union address_union {
+    vl_api_ip4_address_t ip4;
+    vl_api_ip6_address_t ip6;
+};
+
+enum address_family : u8 {
+    ADDRESS_IP4 = 0,
+    ADDRESS_IP6,
+};
+
+manual_print typedef address {
+    vl_api_address_family_t af;
+    vl_api_address_union_t un;
+};
+
+autoendian autoreply define union_message
+{
+    u32 client_index;
+    u32 context;
+    vl_api_address_t address;
+};
+
+typedef module_version {
+    u8 dummy;
+};
+
+autoendian define variable_array {
+    u32 client_index;
+    u32 context;
+    u8 nitems;
+    u64 configs[nitems];
+};
+
+autoendian define variable_array_reply {
+    u32 context;
+    i32 retval;
+    u32 count;
+    vl_api_module_version_t api_versions[count];
+};
+
+autoendian autoreply define field_option {
+    u32 context;
+    bool keepalive[default=true];
+};
+
+define ip_table_dump {
+    u32 client_index;
+    u32 context;
+};
+
+define ip_table_details {
+    u32 context;
+    /* ... */
+};
+
+enumflag mss_clamp_dir : u8 {
+    MSS_CLAMP_DIR_NONE = 0x0,
+    MSS_CLAMP_DIR_RX = 0x1,
+    MSS_CLAMP_DIR_TX = 0x2,
+};
+
+autoendian autoreply define flags {
+    u32 client_index;
+    u32 context;
+    vl_api_mss_clamp_dir_t flags;
+};
+
+autoendian autoreply define str_request {
+    u32 client_index;
+    u32 context;
+    string s0[64];
+    string s1[];
+};
+
+service {
+    rpc no_return returns null;
+    rpc want_interface_events returns want_interface_events_reply
+        events sw_interface_event;
+    rpc sw_interface_tx_placement_get returns sw_interface_tx_placement_get_reply
+        stream sw_interface_tx_placement_details;
+};

@@ -121,5 +121,43 @@ class ExampleTestCase(VppTestCase):
         new_err = self.statistics.get_err_counter("/err/example/Drop")
         self.assertEqual(new_err, err)
 
+    def enable_disable_api(self, sw_if_index, enable):
+        self.vapi.api(
+            self.vapi.papi.example_enable_disable,
+            {
+                'sw_if_index': sw_if_index,
+                'enable': enable
+            },
+        )
+
+    def test_example_api(self):
+        """Example node via API"""
+        err = self.statistics.get_err_counter("/err/example/Drop")
+        self.enable_disable_api(self.pg0.sw_if_index, True)
+
+        packet = self.create_packet()
+        self.logger.info(ppp("Sending packet:", packet))
+        self.pg0.add_stream(packet)
+        self.pg_start()
+
+        self.logger.debug(self.vapi.cli("show trace"))
+
+        # Expect the packet counter to have been incremented by one
+        new_err = self.statistics.get_err_counter("/err/example/Drop")
+        self.assertEqual(new_err, err + 1)
+
+        # Now disable and expect the packet counter to not be incremented
+        err = new_err
+        self.enable_disable_api(self.pg0.sw_if_index, False)
+
+        packet = self.create_packet()
+        self.logger.info(ppp("Sending packet:", packet))
+        self.pg0.add_stream(packet)
+        self.pg_start()
+
+        new_err = self.statistics.get_err_counter("/err/example/Drop")
+        self.assertEqual(new_err, err)
+
+
 if __name__ == "__main__":
     unittest.main(testRunner=VppTestRunner)

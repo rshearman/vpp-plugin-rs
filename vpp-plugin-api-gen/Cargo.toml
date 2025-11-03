@@ -1,0 +1,22 @@
+[package]
+name = "vpp-plugin-api-gen"
+version = "0.1.0"
+edition = "2024"
+description = """
+Rust code generator for VPP API files.
+"""
+repository = "https://github.com/rshearman/vpp-plugin-rs"
+license = "Apache-2.0"
+keywords = ["vpp"]
+categories = ["api-bindings", "network-programming"]
+
+[dependencies]
+crc32fast = "1.5.0"
+indexmap = { version = "2.12.0", features = ["serde"] }
+peg = "0.8.5"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.145", features = ["preserve_order"] }
+thiserror = "2.0.17"
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"

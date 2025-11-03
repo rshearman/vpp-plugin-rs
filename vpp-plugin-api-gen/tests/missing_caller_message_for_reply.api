@@ -1,0 +1,6 @@
+option version = "1.0.0";
+
+autoendian define delete_reply {
+    u32 context;
+    i32 retval;
+};

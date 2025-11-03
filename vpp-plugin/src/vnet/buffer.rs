@@ -19,7 +19,6 @@ use crate::bindings::{
 bitflags! {
     /// VNET buffer flags
     pub struct BufferFlags: u32 {
-        #[allow(missing_docs)]
         const L4_CHECKSUM_COMPUTED = VNET_BUFFER_F_L4_CHECKSUM_COMPUTED as u32;
         const L4_CHECKSUM_CORRECT = VNET_BUFFER_F_L4_CHECKSUM_CORRECT as u32;
         const VLAN_2_DEEP = VNET_BUFFER_F_VLAN_2_DEEP as u32;

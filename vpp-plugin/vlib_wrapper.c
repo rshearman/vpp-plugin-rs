@@ -97,3 +97,15 @@ vl_api_helper_client_index_to_registration(u32 index)
 {
     return vl_api_client_index_to_registration(index);
 }
+
+api_main_t *
+vlibapi_helper_get_main(void)
+{
+    return my_api_main;
+}
+
+void
+vl_api_helper_send_msg(vl_api_registration_t *rp, u8 *elem)
+{
+    vl_api_send_msg(rp, elem);
+}

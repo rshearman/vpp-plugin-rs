@@ -35,12 +35,18 @@ use vpp_plugin::{
         node_generic::{generic_feature_node_x1, FeatureNextNode, GenericFeatureNodeX1},
         BufferIndex,
     },
-    vlib_cli_command, vlib_init_function, vlib_node, vlib_plugin_register,
+    vlib_cli_command, vlib_init_function, vlib_node, vlib_plugin_register, vlibapi,
     vnet::types::SwIfIndex,
     vnet_feature_init,
     vppinfra::{error::ErrorStack, unlikely},
     ErrorCounters, NextNodes,
 };
+
+use crate::example_api::ExampleEnableDisableReply;
+
+mod example_api {
+    include!(concat!(env!("OUT_DIR"), "/src/example_api.rs"));
+}
 
 const IP_PROTOCOL_ICMP: u8 = 1;
 
@@ -178,8 +184,33 @@ fn enable_disable_command(
     Ok(())
 }
 
+struct ApiHandler;
+
+impl example_api::Handlers for ApiHandler {
+    fn example_enable_disable(
+        vm: &vpp_plugin::vlib::BarrierHeldMainRef,
+        mp: &example_api::ExampleEnableDisable,
+    ) -> Result<vlibapi::Message<example_api::ExampleEnableDisableReply>, i32> {
+        let sw_if_index = SwIfIndex::new(mp.sw_if_index);
+
+        if mp.enable {
+            EXAMPLE_FEAT.enable(vm, sw_if_index, ())?;
+        } else {
+            EXAMPLE_FEAT.disable(vm, sw_if_index)?;
+        }
+
+        Ok(ExampleEnableDisableReply {
+            context: mp.context,
+            ..Default::default()
+        }
+        .into())
+    }
+}
+
 #[vlib_init_function]
 fn example_init(_vm: &mut vlib::BarrierHeldMainRef) -> Result<(), ErrorStack> {
+    example_api::example_register_messages::<ApiHandler>();
+
     Ok(())
 }
 

@@ -26,6 +26,7 @@ pub mod bindings;
 #[doc(hidden)]
 pub mod macro_support;
 pub mod vlib;
+pub mod vlibapi;
 pub mod vnet;
 pub mod vppinfra;
 

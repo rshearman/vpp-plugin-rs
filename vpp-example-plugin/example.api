@@ -1,0 +1,14 @@
+option version = "1.0.0";
+
+/**
+ * @brief Enable/disable example node on a given interface
+ * @param enable - Zero to disable, non-zero to enable
+ * @param sw_if_index - Interface
+ */
+autoreply autoendian define example_enable_disable
+{
+  u32 client_index;
+  u32 context;
+  bool enable;
+  u32 sw_if_index;
+};

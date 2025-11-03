@@ -1,0 +1,10 @@
+option version = "1.0.0";
+
+typedef address_family {
+    u8 af;
+};
+
+enum address_family : u8 {
+    ADDRESS_IP4 = 0,
+    ADDRESS_IP6,
+};

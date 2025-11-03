@@ -1,0 +1,13 @@
+/*
+ * File comment
+ */
+option version = "1.0.0";
+
+typedef string my_str[];
+
+autoendian autoreply define variable_array {
+    u32 client_index;
+    u32 context;
+    vl_api_my_str_t vla;
+    u8 not_vla;
+};

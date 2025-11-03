@@ -1,0 +1,10 @@
+option version = "1.0.0";
+
+autoendian define create_reply {
+    u32 context;
+    i32 retval;
+};
+
+service {
+    rpc create returns create_reply;
+};

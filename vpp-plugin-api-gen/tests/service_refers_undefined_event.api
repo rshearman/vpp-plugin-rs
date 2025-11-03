@@ -1,0 +1,14 @@
+option version = "1.0.0";
+
+autoreply define want_interface_events
+{
+    u32 client_index;
+    u32 context;
+    u32 enable_disable;
+    u32 pid;
+};
+
+service {
+    rpc want_interface_events returns want_interface_events_reply
+        events sw_interface_event;
+};

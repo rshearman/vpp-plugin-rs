@@ -1,0 +1,9 @@
+/*
+ * File comment
+ */
+option version = "1.0.0";
+
+define ip_table_dump {
+    u32 client_index;
+    u32 context;
+};

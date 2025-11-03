@@ -9,3 +9,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 vpp-plugin = { path = "../vpp-plugin" }
+
+[build-dependencies]
+vpp-plugin-api-gen = { path = "../vpp-plugin-api-gen" }

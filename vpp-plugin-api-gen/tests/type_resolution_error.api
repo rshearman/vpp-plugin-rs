@@ -1,0 +1,8 @@
+option version = "1.0.0";
+
+autoreply autoendian define type_resolution_error {
+    u32 client_index;
+    u32 context;
+
+    vl_api_does_not_exist_t field;
+};
