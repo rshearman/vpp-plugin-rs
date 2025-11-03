@@ -26,7 +26,7 @@
 //! The plugin is intentionally small and focussed and can be used as a
 //! template when implementing your own feature.
 
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 use vpp_plugin::{
     bindings::ip4_header_t,
@@ -35,7 +35,9 @@ use vpp_plugin::{
         node_generic::{generic_feature_node_x1, FeatureNextNode, GenericFeatureNodeX1},
         BufferIndex,
     },
-    vlib_init_function, vlib_node, vlib_plugin_register, vnet_feature_init,
+    vlib_cli_command, vlib_init_function, vlib_node, vlib_plugin_register,
+    vnet::types::SwIfIndex,
+    vnet_feature_init,
     vppinfra::{error::ErrorStack, unlikely},
     ErrorCounters, NextNodes,
 };
@@ -136,6 +138,44 @@ vnet_feature_init! {
     identifier: EXAMPLE_FEAT,
     arc_name: "ip4-unicast",
     node: ExampleNode,
+}
+
+#[vlib_cli_command(
+    path = "rust-example",
+    short_help = "rust-example <interface-name> [disable]"
+)]
+fn enable_disable_command(
+    vm: &mut vlib::BarrierHeldMainRef,
+    input: &str,
+) -> Result<(), ErrorStack> {
+    let args: Vec<_> = input.split(' ').collect();
+    if args.is_empty() {
+        return Err(ErrorStack::msg("Missing interface name"));
+    }
+
+    let mut enable = true;
+    let sw_if_index = SwIfIndex::from_str(args[0])
+        .map_err(|_| ErrorStack::msg(format!("Invalid interface name {}", args[0])))?;
+
+    if args.len() >= 2 {
+        if args[1] == "disable" {
+            enable = false;
+        } else {
+            return Err(ErrorStack::msg(format!("Unrecognised option {}", args[1])));
+        }
+    }
+
+    if enable {
+        EXAMPLE_FEAT
+            .enable(vm, sw_if_index, ())
+            .map_err(|e| e.context("Failed to enable example feature"))?;
+    } else {
+        EXAMPLE_FEAT
+            .disable(vm, sw_if_index)
+            .map_err(|e| e.context("Failed to disable example feature"))?;
+    }
+
+    Ok(())
 }
 
 #[vlib_init_function]

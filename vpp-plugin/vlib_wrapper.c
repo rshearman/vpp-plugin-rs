@@ -20,6 +20,12 @@ void vlib_helper_remove_feature_from_registrations (
     VLIB_REMOVE_FROM_LINKED_LIST(fm->next_feature, r, next);
 }
 
+void vlib_helper_remove_cli_command(
+  vlib_cli_main_t *cm, vlib_cli_command_t *x)
+{
+    VLIB_REMOVE_FROM_LINKED_LIST(cm->cli_command_registrations, x, next_cli_command);
+}
+
 u32 vlib_helper_buffer_alloc(vlib_main_t *vm, u32 *buffers, u32 n_buffers)
 {
     return vlib_buffer_alloc(vm, buffers, n_buffers);
@@ -84,4 +90,10 @@ uword vlib_helper_unformat_get_input(unformat_input_t * input)
 void vlib_helper_unformat_free(unformat_input_t * input)
 {
     unformat_free(input);
+}
+
+vl_api_registration_t *
+vl_api_helper_client_index_to_registration(u32 index)
+{
+    return vl_api_client_index_to_registration(index);
 }

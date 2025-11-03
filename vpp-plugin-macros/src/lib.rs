@@ -1059,3 +1059,134 @@ pub fn vnet_feature_init(ts: TokenStream) -> TokenStream {
 
     output.into()
 }
+
+/// Creates a CLI command function
+///
+/// # Attributes
+///
+/// - `path`: (required, string literal) The CLI command path.
+/// - `short_help`: (optional, string literal) A short help string for the CLI command.
+///
+/// # Examples
+///
+/// ```
+/// # use vpp_plugin::{vlib_cli_command, vlib, vppinfra::error::ErrorStack};
+/// #[vlib_cli_command(
+///     path = "rust-example",
+///     short_help = "rust-example <interface-name> [disable]",
+/// )]
+/// fn enable_disable_command(_vm: &mut vlib::BarrierHeldMainRef, _input: &str) -> Result<(), ErrorStack> {
+///     Ok(())
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn vlib_cli_command(attributes: TokenStream, function: TokenStream) -> TokenStream {
+    let mut path: Option<syn::LitStr> = None;
+    let mut short_help: Option<syn::LitStr> = None;
+    let attr_parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("path") {
+            path = Some(meta.value()?.parse()?);
+            Ok(())
+        } else if meta.path.is_ident("short_help") {
+            short_help = Some(meta.value()?.parse()?);
+            Ok(())
+        } else {
+            Err(meta.error("unsupported vlib_cli_command property"))
+        }
+    });
+
+    syn::parse_macro_input!(attributes with attr_parser);
+
+    let item: syn::Item = syn::parse_macro_input!(function);
+    if let syn::Item::Fn(function) = item {
+        let syn::ItemFn {
+            attrs,
+            block,
+            vis,
+            sig:
+                syn::Signature {
+                    ident,
+                    unsafety,
+                    constness,
+                    abi,
+                    inputs,
+                    output,
+                    ..
+                },
+            ..
+        } = function;
+
+        let path = path.expect(
+            "Missing attribute 'path'. Example: #[vlib_cli_command(path = \"rust-example\")]",
+        );
+        let path = format!("{}\0", path.value());
+        let short_help = if let Some(short_help) = short_help {
+            let short_help = format!("{}\0", short_help.value());
+            quote!(#short_help.as_ptr() as *mut ::std::os::raw::c_char)
+        } else {
+            quote!(std::ptr::null_mut())
+        };
+        let raw_fn_ident = syn::parse_str::<syn::Ident>(format!("__{}", ident).as_ref())
+            .expect("Unable to create identifier");
+        let ctor_fn_ident = syn::parse_str::<syn::Ident>(
+            format!("__vlib_cli_command_registration_{}", ident).as_ref(),
+        )
+        .expect("Unable to create identifier");
+        let dtor_fn_ident = syn::parse_str::<syn::Ident>(
+            format!("__vlib_cli_command_unregistration_{}", ident).as_ref(),
+        )
+        .expect("Unable to create identifier");
+        let cli_command_ident =
+            syn::parse_str::<syn::Ident>(format!("_VLIB_CLI_COMMAND_{}", ident).as_ref())
+                .expect("Unable to create identifier");
+
+        let output = quote!(
+            #(#attrs)*
+            #vis #unsafety #abi #constness fn #ident(#inputs) #output #block
+
+            #[doc(hidden)]
+            unsafe extern "C" fn #raw_fn_ident(
+                vm: *mut ::vpp_plugin::bindings::vlib_main_t,
+                input: *mut ::vpp_plugin::bindings::unformat_input_t,
+                _cmd: *mut ::vpp_plugin::bindings::vlib_cli_command_t,
+            ) -> *mut ::vpp_plugin::bindings::clib_error_t
+            {
+                let s = ::vpp_plugin::vppinfra::unformat::raw_unformat_line_input_to_string(input);
+                if let Err(e) = #ident(::vpp_plugin::vlib::BarrierHeldMainRef::from_ptr_mut(vm), s.as_str()) {
+                    e.into_raw()
+                } else {
+                    std::ptr::null_mut()
+                }
+            }
+
+            static #cli_command_ident: ::vpp_plugin::vlib::cli::CommandRegistration = ::vpp_plugin::vlib::cli::CommandRegistration::new(::vpp_plugin::bindings::vlib_cli_command_t {
+                path: #path.as_ptr() as *mut ::std::os::raw::c_char,
+                short_help: #short_help,
+                long_help: std::ptr::null_mut(), // TODO
+                function: Some(#raw_fn_ident),
+                is_mp_safe: 0,
+                ..::vpp_plugin::bindings::vlib_cli_command_t::new()
+            });
+
+            #[::vpp_plugin::macro_support::ctor::ctor(crate_path = ::vpp_plugin::macro_support::ctor)]
+            unsafe fn #ctor_fn_ident () {
+                unsafe {
+                    #cli_command_ident.register();
+                }
+            }
+
+            #[::vpp_plugin::macro_support::ctor::dtor(crate_path = ::vpp_plugin::macro_support::ctor)]
+            unsafe fn #dtor_fn_ident() {
+                unsafe {
+                    #cli_command_ident.unregister();
+                }
+            }
+        );
+
+        // eprintln!("{}", output);
+
+        output.into()
+    } else {
+        panic!("#[vlib_cli_command] items must be functions");
+    }
+}

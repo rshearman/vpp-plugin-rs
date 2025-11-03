@@ -20,6 +20,7 @@ fn main() {
         .allowlist_file("vlib_wrapper\\.h")
         .allowlist_file(".*/vlib/buffer\\.h")
         .allowlist_file(".*/vlib/buffer_funcs\\.h")
+        .allowlist_file(".*/vlib/cli\\.h")
         .allowlist_file(".*/vlib/config\\.h")
         .allowlist_file(".*/vlib/defs\\.h")
         .allowlist_file(".*/vlib/global_funcs\\.h")

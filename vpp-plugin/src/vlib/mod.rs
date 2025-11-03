@@ -3,6 +3,7 @@
 //! This module contains abstractions around VPP's application layer, `vlib`.
 
 pub mod buffer;
+pub mod cli;
 pub mod main;
 pub mod node;
 pub mod node_generic;

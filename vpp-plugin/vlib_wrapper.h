@@ -16,6 +16,9 @@ void vlib_helper_remove_node_from_registrations (
 void vlib_helper_remove_feature_from_registrations (
   vnet_feature_main_t *fm, vnet_feature_registration_t *r);
 
+void vlib_helper_remove_cli_command(
+  vlib_cli_main_t *cm, vlib_cli_command_t *x);
+
 u32 vlib_helper_buffer_alloc(vlib_main_t * vm, u32 * buffers, u32 n_buffers);
 void vlib_helper_buffer_free(vlib_main_t * vm, u32 *buffers, u32 n_buffers);
 
