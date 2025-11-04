@@ -1,0 +1,30 @@
+From 9e3f2cbfc2b32e2c6ab5ba48a276a156f9661d81 Mon Sep 17 00:00:00 2001
+From: Rob Shearman <robertshearman@gmail.com>
+Date: Mon, 3 Nov 2025 10:22:24 +0000
+Subject: vnet: link against vlibapi & vlibmemory
+
+vnet uses a number of vlibapi and vlibmemory functions which are
+reported as undefined symbols by `ldd -r`. Therefore, link vnet
+against vlibapi and vlibmemory to avoid these undefined symbols.
+
+Change-Id: Id28f703a40f9194969cde9462217e9d469f0a615
+---
+ src/vnet/CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/vnet/CMakeLists.txt b/src/vnet/CMakeLists.txt
+index b6227d45a..0ae677e04 100644
+--- a/src/vnet/CMakeLists.txt
++++ b/src/vnet/CMakeLists.txt
+@@ -1419,7 +1419,7 @@ add_vpp_library(vnet
+   MULTIARCH_SOURCES ${VNET_MULTIARCH_SOURCES}
+   INSTALL_HEADERS ${VNET_HEADERS}
+   API_FILES ${VNET_API_FILES}
+-  LINK_LIBRARIES vppinfra svm vlib
++  LINK_LIBRARIES vppinfra svm vlib vlibapi vlibmemory
+   DEPENDS vpp_version_h api_headers
+ )
+ 
+-- 
+2.43.0
+

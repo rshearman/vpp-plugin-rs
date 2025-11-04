@@ -1,0 +1,30 @@
+From 17b3c31655f49957daf45383cc1799f06ba02950 Mon Sep 17 00:00:00 2001
+From: Rob Shearman <robertshearman@gmail.com>
+Date: Mon, 3 Nov 2025 10:37:38 +0000
+Subject: vlibapi: link against vppinfra and svm
+
+vlibapi uses a number of vppinfra and svm functions which are reported
+as undefined symbols by `ldd -r`. Therefore, link vlibapi against
+vppinfra and svm to avoid these undefined symbols.
+
+Change-Id: I41c5e56dc9d80c7b0dea0e00db0913ea223383de
+---
+ src/vlibapi/CMakeLists.txt | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/vlibapi/CMakeLists.txt b/src/vlibapi/CMakeLists.txt
+index 6476b5a2f..96fbe5aa4 100644
+--- a/src/vlibapi/CMakeLists.txt
++++ b/src/vlibapi/CMakeLists.txt
+@@ -25,5 +25,8 @@ add_vpp_library (vlibapi
+   api_types.h
+   vat_helper_macros.h
+   memory_shared.h
++
++  LINK_LIBRARIES
++  vppinfra svm
+ )
+ 
+-- 
+2.43.0
+

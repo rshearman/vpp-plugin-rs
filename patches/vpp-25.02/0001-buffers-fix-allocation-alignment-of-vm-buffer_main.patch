@@ -1,0 +1,38 @@
+From a6f4141708a474d11bd9bb845d2e6fd5054241d8 Mon Sep 17 00:00:00 2001
+From: Rob Shearman <robertshearman@gmail.com>
+Date: Mon, 20 Oct 2025 13:28:34 +0100
+Subject: buffers: fix allocation alignment of vm->buffer_main
+
+vlib_buffer_main_t requires an alignment of CLIB_CACHE_LINE_BYTES, but
+the default allocation alignment is less than this.
+
+The C17 spec (6.3.2.3p7) states that converting to a pointer that
+isn't correctly aligned for the type is undefined behaviour. In
+addition, in this case it may result in non-optimal usage of the
+cache.
+
+Fix this by using clib_mem_alloc_aligned with the correct alignment
+requirement for vlib_buffer_main_t.
+
+Change-Id: Idb64c7d93c142cbf81dc7a20997c1a63e17039f9
+---
+ src/vlib/buffer.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/vlib/buffer.c b/src/vlib/buffer.c
+index a7952d93c..f45813f51 100644
+--- a/src/vlib/buffer.c
++++ b/src/vlib/buffer.c
+@@ -754,7 +754,8 @@ vlib_buffer_main_alloc (vlib_main_t * vm)
+   if (vm->buffer_main)
+     return;
+ 
+-  vm->buffer_main = bm = clib_mem_alloc (sizeof (bm[0]));
++  vm->buffer_main = bm = clib_mem_alloc_aligned (
++    sizeof (bm[0]), CLIB_CACHE_LINE_BYTES);
+   clib_memset (vm->buffer_main, 0, sizeof (bm[0]));
+   bm->default_data_size = VLIB_BUFFER_DEFAULT_DATA_SIZE;
+ }
+-- 
+2.43.0
+

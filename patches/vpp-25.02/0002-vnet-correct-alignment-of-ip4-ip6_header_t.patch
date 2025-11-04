@@ -1,0 +1,73 @@
+From e7709f9d9ab2b7dd296ebb1f7a29fe1ed1998cd0 Mon Sep 17 00:00:00 2001
+From: Rob Shearman <robertshearman@gmail.com>
+Date: Mon, 20 Oct 2025 17:47:33 +0100
+Subject: vnet: correct alignment of ip4/ip6_header_t
+
+These alias packet data and so cannot have any alignment guarantees,
+so apply CLIB_PACKED to them to tell the compiler they have no
+guaranteed alignment.
+
+Change-Id: Id68145e86e15c669be557db1c39ca502384b9823
+---
+ src/vnet/ip/ip4_packet.h | 8 ++++----
+ src/vnet/ip/ip6_packet.h | 8 ++++----
+ 2 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/src/vnet/ip/ip4_packet.h b/src/vnet/ip/ip4_packet.h
+index 269049194..7c2251e00 100644
+--- a/src/vnet/ip/ip4_packet.h
++++ b/src/vnet/ip/ip4_packet.h
+@@ -85,8 +85,7 @@ typedef struct
+ 
+ typedef union
+ {
+-  struct
+-  {
++  CLIB_PACKED (struct {
+     /* 4 bit packet length (in 32bit units) and version VVVVLLLL.
+        e.g. for packets w/ no options ip_version_and_header_length == 0x45. */
+     u8 ip_version_and_header_length;
+@@ -121,11 +120,12 @@ typedef union
+     {
+       struct
+       {
+-	ip4_address_t src_address, dst_address;
++        ip4_address_t src_address;
++        ip4_address_t dst_address;
+       };
+       ip4_address_pair_t address_pair;
+     };
+-  };
++  });
+ 
+   /* For checksumming we'll want to access IP header in word sized chunks. */
+   /* For 64 bit machines. */
+diff --git a/src/vnet/ip/ip6_packet.h b/src/vnet/ip/ip6_packet.h
+index c506792dd..8253877f0 100644
+--- a/src/vnet/ip/ip6_packet.h
++++ b/src/vnet/ip/ip6_packet.h
+@@ -290,8 +290,7 @@ ip6_address_hash_to_u64 (const ip6_address_t * a)
+   return (a->as_u64[0] ^ a->as_u64[1]);
+ }
+ 
+-typedef struct
+-{
++typedef CLIB_PACKED (struct {
+   /* 4 bit version, 8 bit traffic class and 20 bit flow label. */
+   u32 ip_version_traffic_class_and_flow_label;
+ 
+@@ -306,8 +305,9 @@ typedef struct
+   u8 hop_limit;
+ 
+   /* Source and destination address. */
+-  ip6_address_t src_address, dst_address;
+-} ip6_header_t;
++  ip6_address_t src_address;
++  ip6_address_t dst_address;
++}) ip6_header_t;
+ 
+ #define IP6_PACKET_TC_MASK 0x0FF00000
+ #define IP6_PACKET_DSCP_MASK 0x0FC00000
+-- 
+2.43.0
+
