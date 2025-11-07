@@ -1,6 +1,21 @@
 use std::env;
 use std::path::PathBuf;
 
+fn headers_available() -> bool {
+    let mut cc = cc::Build::new();
+    cc.file("vlib_wrapper.h");
+    cc.warnings_into_errors(true);
+    if let Err(e) = cc.try_compile("libvlib_wrapper.a") {
+        println!(
+            "cargo:warning=Compile failed: {}, using pre-generated bindings",
+            e
+        );
+        false
+    } else {
+        true
+    }
+}
+
 fn build_wrapper() {
     println!("cargo:rerun-if-changed=vlib_wrapper.c");
 
@@ -11,9 +26,15 @@ fn build_wrapper() {
 }
 
 fn main() {
-    build_wrapper();
-
     println!("cargo:rerun-if-changed=vlib_wrapper.h");
+    println!("cargo:rustc-check-cfg=cfg(pregenerated_bindings)");
+
+    if !headers_available() {
+        println!("cargo:rustc-cfg=pregenerated_bindings");
+        return;
+    }
+
+    build_wrapper();
 
     let bindings = bindgen::Builder::default()
         .header("vlib_wrapper.h")

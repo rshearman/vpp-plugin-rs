@@ -26,6 +26,13 @@
 //! Note that these bindings may vary between VPP versions and targets, and care should be taken
 //! to ensure compatibility when using them directly.
 
+#[cfg(all(pregenerated_bindings, target_arch = "x86_64", target_os = "linux"))]
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/bindings/x86_64-unknown-linux-gnu.rs"
+));
+
+#[cfg(not(pregenerated_bindings))]
 include!(concat!(env!("OUT_DIR"), "/vlib_bindings.rs"));
 
 // bindgen generates duplicate definitions for these types due to forward declarations in vlib/trace.h, so we blocklist them and declare them manually here
