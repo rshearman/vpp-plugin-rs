@@ -216,9 +216,14 @@ impl<T> VecRef<T> {
         // set to zero so the dropped elements cannot be accessed again
         unsafe {
             let hdr = self.as_vec_header_ptr();
+            // Preserve total capacity (len + grow_elts) when clearing. Save
+            // the old capacity and set grow_elts to that value so capacity
+            // does not shrink.
             let len = (*hdr).len;
+            let old_grow = (*hdr).grow_elts as u32;
+            let cap = len.saturating_add(old_grow);
             (*hdr).len = 0;
-            (*hdr).grow_elts = len.try_into().unwrap_or(u8::MAX);
+            (*hdr).grow_elts = cap.try_into().unwrap_or(u8::MAX);
             ptr::drop_in_place(elems);
         }
     }
@@ -787,6 +792,7 @@ macro_rules! vec {
 
 #[cfg(test)]
 mod tests {
+    use crate::vppinfra::vec::SliceExt;
     use crate::{vec, vppinfra::clib_mem_init};
 
     use super::Vec;
@@ -836,5 +842,118 @@ mod tests {
         assert_eq!(v[0], 1);
         assert_eq!(v[1], 2);
         assert_eq!(v[2], 3);
+    }
+
+    #[test]
+    fn remove_and_shift() {
+        clib_mem_init();
+
+        let mut v = vec![1, 2, 3, 4];
+        let removed = v.remove(1);
+        assert_eq!(removed, 2);
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0], 1);
+        assert_eq!(v[1], 3);
+        assert_eq!(v[2], 4);
+    }
+
+    #[test]
+    fn insert_mut_middle() {
+        clib_mem_init();
+
+        let mut v = vec![1, 3];
+        let slot = v.insert_mut(1, 2);
+        // slot should point to the newly-inserted element
+        assert_eq!(*slot, 2);
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0], 1);
+        assert_eq!(v[1], 2);
+        assert_eq!(v[2], 3);
+    }
+
+    #[test]
+    fn clear_preserves_capacity() {
+        clib_mem_init();
+
+        let mut v = vec![10, 20, 30];
+        let cap = v.capacity();
+        v.clear();
+        assert_eq!(v.len(), 0);
+        assert!(
+            v.capacity() >= cap,
+            "New capacity {} should be >= old capacity {}",
+            v.capacity(),
+            cap
+        );
+    }
+
+    #[test]
+    fn into_raw_and_from_raw_roundtrip() {
+        clib_mem_init();
+
+        let mut v = Vec::new();
+        v.push(7);
+        v.push(8);
+        let raw = v.into_raw();
+
+        // SAFETY: raw was produced by Vec::into_raw above and is valid to
+        // reconstruct into a Vec here within the same process.
+        unsafe {
+            let v2 = Vec::from_raw(raw);
+            assert_eq!(v2.len(), 2);
+            assert_eq!(v2[0], 7);
+            assert_eq!(v2[1], 8);
+            // v2 drops here and frees the memory
+        }
+    }
+
+    #[test]
+    fn extend_with_clones() {
+        clib_mem_init();
+
+        let mut v: Vec<String> = Vec::new();
+        v.extend_with(3, "x".to_string());
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0], "x");
+        assert_eq!(v[1], "x");
+        assert_eq!(v[2], "x");
+    }
+
+    #[test]
+    fn slice_to_vpp_vec() {
+        clib_mem_init();
+
+        let s = [42u16, 43u16];
+        let v = s.as_slice().to_vpp_vec();
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], 42);
+        assert_eq!(v[1], 43);
+    }
+
+    #[test]
+    fn clone_vec() {
+        clib_mem_init();
+
+        let v = vec![5u8, 6u8];
+        let v2 = v.clone();
+        assert_eq!(v2.len(), 2);
+        assert_eq!(v2[0], 5);
+        assert_eq!(v2[1], 6);
+    }
+
+    #[test]
+    fn spare_capacity_and_set_len() {
+        clib_mem_init();
+
+        let mut v: Vec<u32> = Vec::with_capacity(4);
+        let slots = v.spare_capacity_mut();
+        // write two values into spare capacity
+        slots[0].write(100);
+        slots[1].write(200);
+        // SAFETY: we've initialised two elements and set_len is used to expose them
+        unsafe { v.set_len(2) }
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], 100);
+        assert_eq!(v[1], 200);
     }
 }
