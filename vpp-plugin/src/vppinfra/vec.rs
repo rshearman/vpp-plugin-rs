@@ -45,8 +45,7 @@ use std::{
     fmt,
     mem::{ManuallyDrop, MaybeUninit},
     ops::{Deref, DerefMut},
-    ptr::{self, NonNull},
-    slice,
+    ptr, slice,
 };
 
 use crate::bindings::{
@@ -92,6 +91,48 @@ impl<T> VecRef<T> {
     #[inline(always)]
     pub unsafe fn from_raw_mut<'a>(ptr: *mut T) -> &'a mut Self {
         &mut *(ptr as *mut _)
+    }
+
+    /// Creates an `Option<&VecRef<T>>` directly from a pointer
+    ///
+    /// # Safety
+    ///
+    /// Either the pointer must be null or all of the following must be true:
+    /// - The pointer must be valid and point to a VPP vector of type `T`.
+    /// - `T` needs to have the alignment that is less than or equal to the alignment of elements
+    ///   used when allocating the vector.
+    /// - The pointer must stay valid and the contents must not be mutated for the duration of the
+    ///   lifetime of the returned reference.
+    ///
+    /// See also [`Self::from_raw_mut`].
+    #[inline(always)]
+    pub unsafe fn from_raw_opt<'a>(ptr: *const T) -> Option<&'a Self> {
+        if ptr.is_null() {
+            None
+        } else {
+            Some(&*(ptr as *mut _))
+        }
+    }
+
+    /// Creates an `Option<&mut VecRef<T>>` directly from a pointer
+    ///
+    /// # Safety
+    ///
+    /// Either the pointer must be null or all of the following must be true:
+    /// - The pointer must be valid and point to a VPP vector of type `T`.
+    /// - `T` needs to have the alignment that is less than or equal to the alignment of elements
+    ///   used when allocating the vector.
+    /// - The pointer must stay valid and the contents must not be mutated for the duration of the
+    ///   lifetime of the returned reference.
+    ///
+    /// See also [`Self::from_raw_mut`].
+    #[inline(always)]
+    pub unsafe fn from_raw_mut_opt<'a>(ptr: *mut T) -> Option<&'a mut Self> {
+        if ptr.is_null() {
+            None
+        } else {
+            Some(&mut *(ptr as *mut _))
+        }
     }
 
     /// Returns a raw pointer to the first element of the vector
@@ -300,14 +341,6 @@ impl<T: fmt::Debug> fmt::Debug for VecRef<T> {
     }
 }
 
-impl<T: Clone> ToOwned for VecRef<T> {
-    type Owned = Vec<T>;
-
-    fn to_owned(&self) -> Vec<T> {
-        self.to_vpp_vec()
-    }
-}
-
 impl<T> AsRef<VecRef<T>> for VecRef<T> {
     fn as_ref(&self) -> &VecRef<T> {
         self
@@ -358,19 +391,108 @@ unsafe impl<T> Send for VecRef<T> where T: Send {}
 /// Owned dynamically resizable array
 ///
 /// A `Vec<T>` is equivalent to a `T *` pointer in VPP (`*mut T` in Rust parlance).
-pub struct Vec<T>(NonNull<T>);
+pub struct Vec<T>(*mut T);
 
 impl<T> Vec<T> {
+    /// Return the length of the vector (0 for null/empty vectors)
+    pub fn len(&self) -> usize {
+        if self.as_ptr().is_null() {
+            0
+        } else {
+            // SAFETY: pointer is non-null and points to a VPP vector
+            unsafe { VecRef::from_raw(self.as_ptr()).len() }
+        }
+    }
+
+    /// Returns true if the vector is empty
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Return the capacity for this vector (0 for null/empty vectors)
+    pub fn capacity(&self) -> usize {
+        if self.as_ptr().is_null() {
+            0
+        } else {
+            // SAFETY: pointer is non-null and points to a VPP vector
+            unsafe { VecRef::from_raw(self.as_ptr()).capacity() }
+        }
+    }
+
+    unsafe fn as_vec_header_ptr(&self) -> *mut vec_header_t {
+        // SAFETY: caller ensures pointer is non-null, and this is a valid vector and so has a
+        // vector header immediately before it
+        unsafe { (self.as_mut_ptr() as *mut vec_header_t).sub(1) }
+    }
+
+    /// Returns the contents of the vector as a slice (safe for empty vectors)
+    pub fn as_slice(&self) -> &[T] {
+        let len = self.len();
+        if len == 0 {
+            &[]
+        } else {
+            // SAFETY: non-null pointer and len elements are initialized
+            unsafe { slice::from_raw_parts(self.as_ptr(), len) }
+        }
+    }
+
+    /// Returns the contents of the vector as a mutable slice (safe for empty vectors)
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        let len = self.len();
+        if len == 0 {
+            &mut []
+        } else {
+            // SAFETY: non-null pointer and len elements are initialized
+            unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), len) }
+        }
+    }
+
+    /// Returns the allocated spare capacity as MaybeUninit slice (0-length for empty vectors)
+    pub fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<T>] {
+        let len = self.len();
+        let cap = self.capacity();
+        if cap == len {
+            &mut []
+        } else {
+            // SAFETY: memory for capacity elements is allocated
+            unsafe {
+                slice::from_raw_parts_mut(
+                    self.as_mut_ptr().add(len) as *mut MaybeUninit<T>,
+                    cap - len,
+                )
+            }
+        }
+    }
+
+    /// Sets the length of the vector
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure new_len <= capacity and elements 0..new_len are initialized.
+    pub unsafe fn set_len(&mut self, new_len: usize) {
+        if self.as_ptr().is_null() {
+            debug_assert_eq!(new_len, 0);
+            return;
+        }
+        debug_assert!(new_len <= self.capacity());
+        let hdr = self.as_vec_header_ptr();
+        let new_grow_elts = self.capacity() - new_len;
+        (*hdr).len = new_len as u32;
+        (*hdr).grow_elts = new_grow_elts.try_into().unwrap_or(u8::MAX);
+    }
+
     /// Creates a `Vec<T>` directly from a pointer
     ///
     /// # Safety
+    ///
+    /// Either the pointer must be null or all of the following must be true:
     /// - The pointer must be valid and point to a VPP vector of type `T`.
     /// - `T` needs to have the alignment that is less than or equal to the alignment of elements
     ///   used when allocating the vector.
     /// - The pointer must stay valid and the contents must not be mutated for the duration of the
     ///   lifetime of the returned object.
     pub unsafe fn from_raw(ptr: *mut T) -> Vec<T> {
-        Vec(NonNull::new_unchecked(ptr))
+        Vec(ptr)
     }
 
     /// Creates a new vector with the at least the specified capacity
@@ -390,9 +512,7 @@ impl<T> Vec<T> {
         // pointer or aborts, and the pointer has memory laid out as we expect, i.e. the
         // vec_header_t before it.
         unsafe {
-            let mut v = Self(NonNull::new_unchecked(
-                _vec_alloc_internal(capacity as u64, &attr).cast(),
-            ));
+            let mut v = Self(_vec_alloc_internal(capacity as u64, &attr).cast());
             // vpp sets len to the alloc'd len, but the semantics of this method is such that len should only be those that are in use
             v.set_len(0);
             v
@@ -400,8 +520,8 @@ impl<T> Vec<T> {
     }
 
     /// Creates a new, empty vector
-    pub fn new() -> Self {
-        Self::with_capacity(0)
+    pub const fn new() -> Self {
+        Self(std::ptr::null_mut())
     }
 
     /// Reserves capacity for at least `additional` more elements to be inserted
@@ -430,8 +550,10 @@ impl<T> Vec<T> {
         // pointer or aborts, and the pointer has memory laid out as we expect, i.e. the
         // vec_header_t before it, and we preserve len to avoid uninitialised element access.
         unsafe {
+            // If this vector is currently empty (null pointer), ask the allocator to allocate
+            // space via _vec_alloc_internal by calling _vec_resize_internal with a null pointer.
             let ptr = _vec_resize_internal(self.as_mut_ptr().cast(), new_len.into(), &attr);
-            self.0 = NonNull::new_unchecked(ptr.cast());
+            self.0 = ptr.cast();
             // Preserve len, since _vec_resize_internal adds to it, whereas it's unallocated space for us
             self.set_len(len);
         }
@@ -517,7 +639,7 @@ impl<T> Vec<T> {
     /// If you need a mutable pointer, use [`Self::as_mut_ptr`] instead.
     #[inline(always)]
     pub const fn as_ptr(&self) -> *const T {
-        self.0.as_ptr()
+        self.0
     }
 
     /// Returns a raw pointer to the first element of the vector
@@ -531,7 +653,7 @@ impl<T> Vec<T> {
     /// If you need a mutable pointer, use [`Self::as_mut_ptr`] instead.
     #[inline(always)]
     pub const fn as_mut_ptr(&self) -> *mut T {
-        self.0.as_ptr()
+        self.0
     }
 }
 
@@ -613,10 +735,14 @@ impl<'a, T: Copy + 'a> Extend<&'a T> for Vec<T> {
 
 impl<T> Drop for Vec<T> {
     fn drop(&mut self) {
-        let elems: *mut [T] = self.as_mut_slice();
-        // SAFETY: creation preconditions mean this is a valid object, and on exit the memory is
-        // freed so the dropped elements cannot be accessed again
+        // If the vector is empty it's represented as a null pointer; nothing to do.
+        if self.as_mut_ptr().is_null() {
+            return;
+        }
+
+        // SAFETY: pointer is non-null and we own the allocation
         unsafe {
+            let elems: *mut [T] = self.as_mut_slice();
             ptr::drop_in_place(elems);
             vec_free_not_inline(self.as_mut_ptr().cast())
         }
@@ -624,20 +750,78 @@ impl<T> Drop for Vec<T> {
 }
 
 impl<T> Deref for Vec<T> {
-    type Target = VecRef<T>;
+    type Target = [T];
 
-    fn deref(&self) -> &VecRef<T> {
-        // SAFETY: creation preconditions mean this is a valid object and is compatible with VecRef<T>
-        unsafe { VecRef::from_raw(self.as_ptr()) }
+    fn deref(&self) -> &[T] {
+        self.as_slice()
     }
 }
 
 impl<T> DerefMut for Vec<T> {
-    fn deref_mut(&mut self) -> &mut VecRef<T> {
-        // SAFETY: creation preconditions mean this is a valid object and is compatible with VecRef<T>
-        unsafe { VecRef::from_raw_mut(self.as_mut_ptr()) }
+    fn deref_mut(&mut self) -> &mut [T] {
+        self.as_mut_slice()
     }
 }
+
+impl<T> Vec<T> {
+    /// Removes and returns the element at `index`.
+    /// For empty (null) vectors this will panic as index is out of bounds.
+    pub fn remove(&mut self, index: usize) -> T {
+        if self.as_mut_ptr().is_null() {
+            panic!("removal index (is {index}) should be <= len (is 0)");
+        }
+        // SAFETY: pointer non-null
+        unsafe { VecRef::from_raw_mut(self.as_mut_ptr()).remove(index) }
+    }
+
+    /// Pops the last element if any
+    pub fn pop(&mut self) -> Option<T> {
+        if self.as_mut_ptr().is_null() {
+            None
+        } else {
+            // SAFETY: pointer non-null
+            unsafe { VecRef::from_raw_mut(self.as_mut_ptr()).pop() }
+        }
+    }
+
+    /// Clears the vector
+    pub fn clear(&mut self) {
+        if self.as_mut_ptr().is_null() {
+            return;
+        }
+        // SAFETY: pointer non-null
+        unsafe { VecRef::from_raw_mut(self.as_mut_ptr()).clear() }
+    }
+
+    /// Returns an optional `&VecRef<T>` for this vector.
+    ///
+    /// Returns `None` when the vector is empty (null pointer), otherwise returns a
+    /// `&VecRef<T>` constructed from the internal pointer.
+    pub fn as_vec_ref(&self) -> Option<&VecRef<T>> {
+        if self.as_ptr().is_null() {
+            None
+        } else {
+            // SAFETY: pointer is non-null and points to a valid VecRef layout
+            Some(unsafe { VecRef::from_raw(self.as_ptr()) })
+        }
+    }
+
+    /// Returns an optional `&mut VecRef<T>` for this vector.
+    ///
+    /// Returns `None` when the vector is empty (null pointer), otherwise returns a
+    /// `&mut VecRef<T>` constructed from the internal pointer.
+    pub fn as_vec_ref_mut(&mut self) -> Option<&mut VecRef<T>> {
+        if self.as_mut_ptr().is_null() {
+            None
+        } else {
+            // SAFETY: pointer is non-null and points to a valid VecRef layout
+            Some(unsafe { VecRef::from_raw_mut(self.as_mut_ptr()) })
+        }
+    }
+}
+
+// Note: we intentionally do not implement Deref/DerefMut to VecRef<T> because owned vectors may
+// be empty (null pointer) and VecRef<T>::from_raw requires a valid non-null pointer.
 
 impl<T: Clone> Clone for Vec<T> {
     fn clone(&self) -> Self {
@@ -675,17 +859,15 @@ impl<T> AsMut<[T]> for Vec<T> {
     }
 }
 
-impl<T> Borrow<VecRef<T>> for Vec<T> {
-    fn borrow(&self) -> &VecRef<T> {
-        // SAFETY: creation preconditions mean this is a valid object and is compatible with VecRef<T>
-        unsafe { VecRef::from_raw(self.as_ptr()) }
+impl<T> Borrow<[T]> for Vec<T> {
+    fn borrow(&self) -> &[T] {
+        &self[..]
     }
 }
 
-impl<T> BorrowMut<VecRef<T>> for Vec<T> {
-    fn borrow_mut(&mut self) -> &mut VecRef<T> {
-        // SAFETY: creation preconditions mean this is a valid object and is compatible with VecRef<T>
-        unsafe { VecRef::from_raw_mut(self.as_mut_ptr()) }
+impl<T> BorrowMut<[T]> for Vec<T> {
+    fn borrow_mut(&mut self) -> &mut [T] {
+        &mut self[..]
     }
 }
 
@@ -793,6 +975,7 @@ macro_rules! vec {
 #[cfg(test)]
 mod tests {
     use crate::vppinfra::vec::SliceExt;
+    use crate::vppinfra::VecRef;
     use crate::{vec, vppinfra::clib_mem_init};
 
     use super::Vec;
@@ -955,5 +1138,41 @@ mod tests {
         assert_eq!(v.len(), 2);
         assert_eq!(v[0], 100);
         assert_eq!(v[1], 200);
+    }
+
+    #[test]
+    fn empty_vec_is_null() {
+        clib_mem_init();
+
+        let mut v: Vec<u8> = Vec::new();
+        assert_eq!(v.len(), 0);
+        assert_eq!(v.capacity(), 0);
+        assert_eq!(v.as_slice(), &[]);
+        assert!(
+            v.as_ptr().is_null(),
+            "expected pointer for empty Vec to be null"
+        );
+
+        assert_eq!(v.spare_capacity_mut().len(), 0);
+        assert_eq!(v.pop(), None);
+        v.clear();
+
+        let raw = v.into_raw();
+        assert!(
+            raw.is_null(),
+            "expected raw pointer for empty Vec to be null"
+        );
+
+        // SAFETY: the pointer is null and it's documented this is allowed
+        let v = unsafe { Vec::from_raw(raw) };
+        assert_eq!(v.as_vec_ref(), None);
+
+        // SAFETY: passing a null pointer to the function is documented as allowed
+        let v = unsafe { VecRef::from_raw_opt(std::ptr::null::<u8>()) };
+        assert_eq!(v, None);
+
+        // SAFETY: passing a null pointer to the function is documented as allowed
+        let v = unsafe { VecRef::from_raw_mut_opt(std::ptr::null_mut::<u8>()) };
+        assert_eq!(v, None);
     }
 }
