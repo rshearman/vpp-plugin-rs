@@ -39,7 +39,7 @@ impl MainRef {
     }
 
     /// Returns the 0-based thread index of this VPP main context
-    pub fn thread_index(&self) -> u32 {
+    pub fn thread_index(&self) -> u16 {
         // SAFETY: as long as `self` is a valid `MainRef`, so is the pointer dereference
         unsafe { (*self.as_ptr()).thread_index }
     }

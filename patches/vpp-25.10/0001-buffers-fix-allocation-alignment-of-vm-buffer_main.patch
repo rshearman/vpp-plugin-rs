@@ -1,4 +1,4 @@
-From a6f4141708a474d11bd9bb845d2e6fd5054241d8 Mon Sep 17 00:00:00 2001
+From c08e251918f89e41df1a61ea3077afe76a27c1c1 Mon Sep 17 00:00:00 2001
 From: Rob Shearman <robertshearman@gmail.com>
 Date: Mon, 20 Oct 2025 13:28:34 +0100
 Subject: buffers: fix allocation alignment of vm->buffer_main

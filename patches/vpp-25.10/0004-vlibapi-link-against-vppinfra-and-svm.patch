@@ -1,4 +1,4 @@
-From 17b3c31655f49957daf45383cc1799f06ba02950 Mon Sep 17 00:00:00 2001
+From 34296609e38aecb8cfb738543ca1ccd7c5fa76e1 Mon Sep 17 00:00:00 2001
 From: Rob Shearman <robertshearman@gmail.com>
 Date: Mon, 3 Nov 2025 10:37:38 +0000
 Subject: vlibapi: link against vppinfra and svm
