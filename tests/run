@@ -1,5 +1,12 @@
 #! /bin/bash
 
+vpp_ws_dir=$1
+
+if [ -z "${vpp_ws_dir}" ]; then
+    echo "Usage: $0 <vpp-ws-dir>" >&2
+    exit 1
+fi
+
 cargo build
 
 if [ ! -d venv ]; then
@@ -19,4 +26,4 @@ mkdir -p plugin-libs
 
 ln -f ../target/debug/libvpp_example_plugin.so plugin-libs/example_plugin.so
 
-python3 run_tests.py --vpp-tag=vpp --vpp-ws-dir=/home/rob/vpp/ --filter *.*.* --extern-plugin-dir $(pwd)/plugin-libs/
+python3 run_tests.py --vpp-tag=vpp --vpp-ws-dir="${vpp_ws_dir}" --filter *.*.* --extern-plugin-dir $(pwd)/plugin-libs/
