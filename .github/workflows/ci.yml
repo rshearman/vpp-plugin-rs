@@ -1,0 +1,78 @@
+name: Continuous Integration
+
+on: [push, pull_request]
+
+env:
+  rust_stable: stable
+  rust_clippy: '1.91.1'
+  vpp: '25.10'
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+jobs:
+  formatting:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Check clippy lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust ${{ env.rust_clippy }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_clippy }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: "cargo clippy --workspace --all-targets --all-features --no-deps -- -D warnings"
+        run: cargo clippy --workspace --all-targets --all-features --no-deps -- -D warnings
+
+  docs:
+    name: Check documentation builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust ${{ env.rust_stable }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_stable }}
+      - uses: Swatinem/rust-cache@v2
+      - name: "cargo doc --no-deps"
+        run: cargo doc --no-deps
+
+  tests:
+    name: Run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust ${{ env.rust_stable }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_stable }}
+      - uses: Swatinem/rust-cache@v2
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: vpp-${{ env.vpp }}
+      - name: Install vpp ${{ env.vpp }}
+        run: |
+          export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+          srcdir="$(pwd)"
+          mkdir /tmp/build
+          cd /tmp/build
+          git clone --depth 1 -b v${{ env.vpp }} https://gerrit.fd.io/r/vpp
+          cd vpp
+          git checkout -b patched
+          for f in ${srcdir}/patches/vpp-${{ env.vpp }}/*.patch; do
+            echo "Applying $f"
+            patch -p1 < $f
+          done
+          make install-dep
+          make pkg-deb
+          sudo dpkg -i build-root/*.deb
+      - name: Run tests
+        run: tests/run /tmp/build/vpp
