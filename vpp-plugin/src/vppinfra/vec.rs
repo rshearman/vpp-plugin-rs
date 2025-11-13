@@ -213,7 +213,7 @@ impl<T> VecRef<T> {
 
             assert!(
                 index < len,
-                "removal index (is {index}) should be <= len (is {len})"
+                "removal index (is {index}) should be < len (is {len})"
             );
 
             // the place we are taking from.
@@ -585,13 +585,13 @@ impl<T> Vec<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the new capacity overflows `u32`.
+    /// Panics if `index > len` or if the new capacity overflows `u32`.
     pub fn insert_mut(&mut self, index: usize, element: T) -> &mut T {
         let len = self.len();
         let capacity = self.capacity();
 
         assert!(
-            index < len,
+            index <= len,
             "insertion index (is {index}) should be <= len (is {len})"
         );
 
@@ -1028,23 +1028,32 @@ mod tests {
     }
 
     #[test]
-    fn remove_and_shift() {
+    fn remove() {
         clib_mem_init();
 
         let mut v = vec![1, 2, 3, 4];
+        // Remove from the middle and shift
         let removed = v.remove(1);
         assert_eq!(removed, 2);
         assert_eq!(v.len(), 3);
         assert_eq!(v[0], 1);
         assert_eq!(v[1], 3);
         assert_eq!(v[2], 4);
+
+        // Remove from the end
+        let removed = v.remove(2);
+        assert_eq!(removed, 4);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], 1);
+        assert_eq!(v[1], 3);
     }
 
     #[test]
-    fn insert_mut_middle() {
+    fn insert_mut() {
         clib_mem_init();
 
         let mut v = vec![1, 3];
+        // Insert in the middle
         let slot = v.insert_mut(1, 2);
         // slot should point to the newly-inserted element
         assert_eq!(*slot, 2);
@@ -1052,6 +1061,16 @@ mod tests {
         assert_eq!(v[0], 1);
         assert_eq!(v[1], 2);
         assert_eq!(v[2], 3);
+
+        // Insert at the end
+        let slot = v.insert_mut(3, 4);
+        // slot should point to the newly-inserted element
+        assert_eq!(*slot, 4);
+        assert_eq!(v.len(), 4);
+        assert_eq!(v[0], 1);
+        assert_eq!(v[1], 2);
+        assert_eq!(v[2], 3);
+        assert_eq!(v[3], 4);
     }
 
     #[test]
