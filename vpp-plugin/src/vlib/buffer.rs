@@ -21,7 +21,10 @@ use crate::{
         node::{ErrorCounters, Node, NodeRuntimeRef, VectorBufferIndex},
         MainRef,
     },
-    vppinfra::likely,
+    vppinfra::{
+        cache::{prefetch_load, prefetch_store},
+        likely,
+    },
 };
 
 #[cfg(feature = "experimental")]
@@ -295,6 +298,41 @@ impl<FeatureData> BufferRef<FeatureData> {
             let error_value = (*node.as_ptr()).errors.add(error.into_u16() as usize);
             self.as_metadata_mut().error = *error_value;
         }
+    }
+
+    /// Hint to the CPU to prefetch the buffer header for read access.
+    ///
+    /// This is a performance hint that attempts to bring the buffer header into the CPU cache
+    /// prior to reading fields from it. It does not affect program semantics and may be a no-op
+    /// on some platforms. Use this when you will shortly read header fields and want to reduce
+    /// cache miss latency.
+    pub fn prefetch_header_load(&self) {
+        prefetch_load(self.as_ptr());
+    }
+
+    /// Hint to the CPU to prefetch the buffer header for write access.
+    ///
+    /// Similar to `prefetch_header_load` but indicates imminent writes to the header. This is a
+    /// performance optimization only and does not change observable behaviour other than timing.
+    pub fn prefetch_header_store(&self) {
+        prefetch_store(self.as_ptr());
+    }
+
+    /// Hint to the CPU to prefetch the buffer data area for read access.
+    ///
+    /// This brings the buffer's data into cache in preparation for reading the packet payload.
+    /// It is a non-semantic performance hint and may be ignored on some architectures. Use this
+    /// when you will shortly read packet data and want to reduce cache miss latency.
+    pub fn prefetch_data_load(&self) {
+        prefetch_load(&self.as_details().data);
+    }
+
+    /// Hint to the CPU to prefetch the buffer data area for write access.
+    ///
+    /// Similar to `prefetch_data_load` but indicates the caller will write into the data area.
+    /// This is a cache-warming hint to reduce latency on subsequent stores.
+    pub fn prefetch_data_store(&self) {
+        prefetch_store(&self.as_details().data);
     }
 }
 
