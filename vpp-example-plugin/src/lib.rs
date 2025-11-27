@@ -32,7 +32,9 @@ use vpp_plugin::{
     bindings::ip4_header_t,
     vlib::{
         self,
-        node_generic::{generic_feature_node_x1, FeatureNextNode, GenericFeatureNodeX1},
+        node_generic::{
+            generic_feature_node_x4, FeatureNextNode, GenericFeatureNodeX1, GenericFeatureNodeX4,
+        },
         BufferIndex,
     },
     vlib_cli_command, vlib_init_function, vlib_node, vlib_plugin_register, vlibapi,
@@ -115,6 +117,74 @@ impl vlib::node::Node for ExampleNode {
         frame: &mut vlib::FrameRef<Self>,
     ) -> u16 {
         struct Impl;
+
+        impl GenericFeatureNodeX4<ExampleNode> for Impl {
+            fn prefetch_buffer_x4(
+                &self,
+                _vm: &vlib::MainRef,
+                _node: &mut vlib::NodeRuntimeRef<ExampleNode>,
+                b: &mut [&mut vlib::BufferRef<<ExampleNode as vlib::node::Node>::FeatureData>; 4],
+            ) {
+                b.iter().for_each(|b0| {
+                    b0.prefetch_header_load();
+                    b0.prefetch_data_load();
+                });
+            }
+
+            #[inline(always)]
+            unsafe fn map_buffer_to_next_x4(
+                &self,
+                _vm: &vlib::MainRef,
+                node: &mut vlib::NodeRuntimeRef<ExampleNode>,
+                b: &mut [&mut vlib::BufferRef<()>; 4],
+            ) -> [FeatureNextNode<ExampleNextNode>; 4] {
+                let ip = [
+                    b[0].current_ptr_mut() as *const ip4_header_t,
+                    b[1].current_ptr_mut() as *const ip4_header_t,
+                    b[2].current_ptr_mut() as *const ip4_header_t,
+                    b[3].current_ptr_mut() as *const ip4_header_t,
+                ];
+                let next0 = if (*ip[0]).__bindgen_anon_1.protocol == IP_PROTOCOL_ICMP {
+                    b[0].set_error(node, ExampleErrorCounter::Drop);
+                    ExampleNextNode::Drop.into()
+                } else {
+                    FeatureNextNode::NextFeature
+                };
+                let next1 = if (*ip[1]).__bindgen_anon_1.protocol == IP_PROTOCOL_ICMP {
+                    b[1].set_error(node, ExampleErrorCounter::Drop);
+                    ExampleNextNode::Drop.into()
+                } else {
+                    FeatureNextNode::NextFeature
+                };
+                let next2 = if (*ip[2]).__bindgen_anon_1.protocol == IP_PROTOCOL_ICMP {
+                    b[2].set_error(node, ExampleErrorCounter::Drop);
+                    ExampleNextNode::Drop.into()
+                } else {
+                    FeatureNextNode::NextFeature
+                };
+                let next3 = if (*ip[3]).__bindgen_anon_1.protocol == IP_PROTOCOL_ICMP {
+                    b[3].set_error(node, ExampleErrorCounter::Drop);
+                    ExampleNextNode::Drop.into()
+                } else {
+                    FeatureNextNode::NextFeature
+                };
+                [next0, next1, next2, next3]
+            }
+
+            unsafe fn trace_buffer(
+                &self,
+                vm: &vlib::MainRef,
+                node: &mut vlib::NodeRuntimeRef<ExampleNode>,
+                b0: &mut vlib::BufferRef<<ExampleNode as vlib::node::Node>::FeatureData>,
+            ) {
+                let ip: *const ip4_header_t = b0.current_ptr_mut() as *const ip4_header_t;
+                if (*ip).__bindgen_anon_1.protocol == IP_PROTOCOL_ICMP {
+                    let t = b0.add_trace(vm, node);
+                    t.write(ExampleTrace { header: *ip });
+                }
+            }
+        }
+
         impl GenericFeatureNodeX1<ExampleNode> for Impl {
             #[inline(always)]
             unsafe fn map_buffer_to_next(
@@ -136,7 +206,8 @@ impl vlib::node::Node for ExampleNode {
                 }
             }
         }
-        generic_feature_node_x1(vm, node, frame, Impl)
+
+        generic_feature_node_x4(vm, node, frame, Impl)
     }
 }
 
