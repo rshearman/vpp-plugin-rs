@@ -1,7 +1,13 @@
 #! /bin/bash
 
+asan=false
+if [ "$1" = "--asan" ]; then
+    asan=true
+    shift
+fi
+
 if [ $# -gt 1 ]; then
-    echo "Usage: $0 [<vpp-ws-dir>]" >&2
+    echo "Usage: $0 [--asan] [<vpp-ws-dir>]" >&2
     exit 1
 fi
 
@@ -11,7 +17,22 @@ if [ -n "$1" ]; then
     vpp_args=(--vpp-tag=vpp --vpp-ws-dir="$1")
 fi
 
-cargo build || exit $?
+if $asan; then
+    export RUSTFLAGS="-Zsanitizer=address"
+    export RUSTDOCFLAGS="-Zsanitizer=address"
+    # Note: requires nightly - `rustup default nightly`
+    host=$(rustc -vV | sed -n 's/^host: //p')
+    if [ -z "$host" ]; then
+        echo "Failed to determine rustc host target" >&2
+        exit 1
+    fi
+    # Building with an explicit --target puts the output in a per-target directory
+    cargo build -Zbuild-std --target "$host" || exit $?
+    target_dir=../target/$host/debug
+else
+    cargo build || exit $?
+    target_dir=../target/debug
+fi
 
 if [ ! -d venv ]; then
     python3 -mvenv venv || exit $?
@@ -28,9 +49,9 @@ cd tests
 
 mkdir -p plugin-libs || exit $?
 
-ln -f ../target/debug/libvpp_example_plugin.so plugin-libs/example_plugin.so || exit $?
-ln -f ../target/debug/libvpp_test_plugin.so plugin-libs/test_plugin.so || exit $?
-ln -f ../target/debug/libvpp_test_version_mismatch_plugin.so plugin-libs/version_mismatch_plugin.so || exit $?
+ln -f "$target_dir"/libvpp_example_plugin.so plugin-libs/example_plugin.so || exit $?
+ln -f "$target_dir"/libvpp_test_plugin.so plugin-libs/test_plugin.so || exit $?
+ln -f "$target_dir"/libvpp_test_version_mismatch_plugin.so plugin-libs/version_mismatch_plugin.so || exit $?
 
 python3 run_tests.py "${vpp_args[@]}" --filter *.*.* --extern-plugin-dir $(pwd)/plugin-libs/
 rc=$?
