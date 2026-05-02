@@ -1,13 +1,26 @@
 #! /bin/bash
 
+asan=false
+if [ "$1" = "--asan" ]; then
+    asan=true
+    shift
+fi
+
 vpp_ws_dir=$1
 
 if [ -z "${vpp_ws_dir}" ]; then
-    echo "Usage: $0 <vpp-ws-dir>" >&2
+    echo "Usage: $0 [--asan] <vpp-ws-dir>" >&2
     exit 1
 fi
 
-cargo build || exit $?
+if $asan; then
+    export RUSTFLAGS="-Zsanitizer=address"
+    export RUSTDOCFLAGS="-Zsanitizer=address"
+    # Note: requires nightly - `rustup default nightly`
+    cargo build -Zbuild-std --target x86_64-unknown-linux-gnu || exit $?
+else
+    cargo build || exit $?
+fi
 
 if [ ! -d venv ]; then
     python3 -mvenv venv || exit $?
