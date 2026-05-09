@@ -18,10 +18,14 @@ fn headers_available() -> bool {
 
 fn build_wrapper() {
     println!("cargo:rerun-if-changed=vlib_wrapper.c");
+    println!("cargo::rerun-if-env-changed=CLIB_DEBUG");
 
     let mut cc = cc::Build::new();
     cc.file("vlib_wrapper.c");
     cc.warnings_into_errors(true);
+    if env::var("CLIB_DEBUG").is_ok() {
+        cc.define("CLIB_DEBUG", None);
+    }
     cc.compile("libvlib_wrapper.a");
 }
 

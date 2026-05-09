@@ -77,10 +77,12 @@ jobs:
           git clone --depth 1 -b v${{ env.vpp }} https://gerrit.fd.io/r/vpp
           cd vpp
           make install-dep
-          make pkg-deb
+          make pkg-deb-debug
           sudo dpkg -i build-root/*.deb
       - name: Run unit tests
         run: cargo test --workspace
+        env:
+          CLIB_DEBUG: 1
       - name: Run integration tests
         run: tests/run /tmp/build/vpp
         env:
@@ -116,15 +118,18 @@ jobs:
           git clone --depth 1 -b v${{ env.vpp }} https://gerrit.fd.io/r/vpp
           cd vpp
           make install-dep
-          make pkg-deb VPP_EXTRA_CMAKE_ARGS=-DVPP_ENABLE_SANITIZE_ADDR=ON
+          make pkg-deb-debug VPP_EXTRA_CMAKE_ARGS=-DVPP_ENABLE_SANITIZE_ADDR=ON
           sudo dpkg -i build-root/*.deb
       - name: Build build scripts and proc-macros
         run: cargo check --workspace
+        env:
+          CLIB_DEBUG: 1
       - name: Run unit tests with ASAN
-        run: cargo test --workspace
+        run: cargo test --workspace -Zbuild-std --target x86_64-unknown-linux-gnu
         env:
           RUSTFLAGS: -Z sanitizer=address
           ASAN_OPTIONS: poison_history_size=128
+          CLIB_DEBUG: 1
       - name: Run integration tests
         run: tests/run --asan /tmp/build/vpp
         env:

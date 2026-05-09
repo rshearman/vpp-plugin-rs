@@ -13,6 +13,9 @@ if [ -z "${vpp_ws_dir}" ]; then
     exit 1
 fi
 
+# Build against debug version of vpp
+export CLIB_DEBUG="1"
+
 if $asan; then
     export RUSTFLAGS="-Zsanitizer=address"
     export RUSTDOCFLAGS="-Zsanitizer=address"
@@ -40,7 +43,7 @@ mkdir -p plugin-libs || exit $?
 ln -f ../target/debug/libvpp_example_plugin.so plugin-libs/example_plugin.so || exit $?
 ln -f ../target/debug/libvpp_test_plugin.so plugin-libs/test_plugin.so || exit $?
 
-python3 run_tests.py --vpp-tag=vpp --vpp-ws-dir="${vpp_ws_dir}" --filter *.*.* --extern-plugin-dir $(pwd)/plugin-libs/
+python3 run_tests.py --vpp-tag=vpp_debug --vpp-ws-dir="${vpp_ws_dir}" --filter *.*.* --extern-plugin-dir $(pwd)/plugin-libs/
 rc=$?
 
 if [ -n "$OUTPUT_LOGS_ON_FAILURE" ]; then
