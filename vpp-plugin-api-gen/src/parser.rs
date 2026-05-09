@@ -574,12 +574,10 @@ impl TypeDetails {
     fn vla(&self, parser: &ApiParser) -> Option<CountDescriptor> {
         let fields = match self {
             Self::TypedefBlock { fields } => fields,
-            Self::Typedef { r#type, size } => {
-                if matches!(size, Some(FieldSize::Variable(None))) && r#type == "string" {
-                    return Some(CountDescriptor::String(vec![]));
-                } else {
-                    return None;
-                }
+            Self::Typedef { r#type, size }
+                if matches!(size, Some(FieldSize::Variable(None))) && r#type == "string" =>
+            {
+                return Some(CountDescriptor::String(vec![]));
             }
             _ => return None,
         };
