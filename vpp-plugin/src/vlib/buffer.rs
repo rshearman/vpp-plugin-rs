@@ -792,7 +792,10 @@ mod tests {
     #[test]
     fn get_buffers() {
         let buffer = vlib_buffer_t::default();
-        let buffers = [buffer; 119];
+        // This is picked deliberately to not be 128 - 8 - 1 to be the worst case in terms of maximising the code
+        // paths that need to be taken
+        const BUFFERS_N: usize = 119;
+        let buffers = [buffer; BUFFERS_N];
         let buffer_indices: ArrayVec<u32, 128> = (0..buffers.len() as u32)
             .map(|n| {
                 n * (std::mem::size_of::<vlib_buffer_t>() as u32 >> CLIB_LOG2_CACHE_LINE_BYTES)
@@ -813,8 +816,7 @@ mod tests {
             let mut to = ArrayVec::new();
             let main_ref = MainRef::from_ptr_mut(std::ptr::addr_of_mut!(main));
             main_ref.get_buffers::<(), FRAME_SIZE>(&buffer_indices, &mut to);
-            let expected: Vec<&vlib_buffer_t> = buffers.iter().collect();
-            assert_eq!(to.len(), expected.len());
+            assert_eq!(to.len(), BUFFERS_N);
             for (i, buf_ref) in to.iter().enumerate() {
                 assert!(
                     buf_ref.as_ptr().cast_const() == std::ptr::addr_of!(buffers[i]),
