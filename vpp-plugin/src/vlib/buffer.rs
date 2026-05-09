@@ -18,6 +18,7 @@ use crate::{
         vlib_buffer_t__bindgen_ty_1, vlib_buffer_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1,
         vlib_helper_buffer_alloc, vlib_helper_buffer_free,
     },
+    const_assert,
     vlib::{
         self, MainRef,
         node::{ErrorCounters, Node, NodeRuntimeRef, VectorBufferIndex},
@@ -584,6 +585,9 @@ impl MainRef {
         unsafe {
             debug_assert!(from_indices.len() <= N);
             assert_unchecked(from_indices.len() <= N);
+            // The vector operations below compute a pointer in terms of u64, i.e. assume that u64
+            // is a pointer-sized type the same as usize.
+            const_assert!(std::mem::size_of::<usize>() == std::mem::size_of::<u64>());
 
             #[cfg(debug_assertions)]
             for from_index in from_indices {
