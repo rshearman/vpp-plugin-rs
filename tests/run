@@ -14,8 +14,11 @@ fi
 # Without a workspace, the system-installed vpp is used
 vpp_args=()
 if [ -n "$1" ]; then
-    vpp_args=(--vpp-tag=vpp --vpp-ws-dir="$1")
+    vpp_args=(--vpp-tag=vpp_debug --vpp-ws-dir="$1")
 fi
+
+# Build against debug version of vpp
+export CLIB_DEBUG="1"
 
 if $asan; then
     export RUSTFLAGS="-Zsanitizer=address"
