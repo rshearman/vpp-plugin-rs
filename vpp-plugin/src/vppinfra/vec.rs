@@ -51,7 +51,7 @@ use std::{
 
 use crate::bindings::{
     _vec_alloc_internal, _vec_resize_internal, VEC_MIN_ALIGN, vec_attr_t, vec_free_not_inline,
-    vec_header_t,
+    vec_header_t, vec_mem_size,
 };
 
 /// Reference to a dynamically resizable array
@@ -200,11 +200,25 @@ impl<T> VecRef<T> {
     /// This is the total number of elements that can be stored in the vector without resizing.
     pub fn capacity(&self) -> usize {
         // SAFETY: creation preconditions mean this is a valid object and it's safe to access the
-        // header
+        // header. This mirrors VPP's vec_max_len: vec_mem_size takes the user pointer and returns
+        // the size of the whole allocation, which includes the vector header, any user header
+        // and any padding for alignment, all of which are covered by hdr_size.
         unsafe {
-            let hdr = self.as_vec_header_ptr();
-            ((*hdr).len + (*hdr).grow_elts as u32) as usize
+            let header_size =
+                (*self.as_vec_header_ptr()).hdr_size as usize * VEC_MIN_ALIGN as usize;
+            (vec_mem_size(self.as_mut_ptr().cast()) as usize - header_size)
+                / std::mem::size_of::<T>()
         }
+    }
+
+    /// Returns the number of elements the vector can grow by
+    ///
+    /// This is the total number of elements that can be stored in the vector without calling
+    /// `_vec_resize_internal`.
+    fn grow_elts(&self) -> u8 {
+        // SAFETY: creation preconditions mean this is a valid object and it's safe to access the
+        // header
+        unsafe { (*self.as_vec_header_ptr()).grow_elts }
     }
 
     /// Removes and returns the element at the specified index
@@ -235,7 +249,8 @@ impl<T> VecRef<T> {
             ptr::copy(ptr.add(1), ptr, len - index - 1);
 
             (*hdr).len = len as u32 - 1;
-            (*hdr).grow_elts += 1;
+            // grow_elts saturates, as with VPP's _vec_set_grow_elts
+            (*hdr).grow_elts = (*hdr).grow_elts.saturating_add(1);
             ret
         }
     }
@@ -251,7 +266,8 @@ impl<T> VecRef<T> {
                 None
             } else {
                 (*hdr).len = len as u32 - 1;
-                (*hdr).grow_elts += 1;
+                // grow_elts saturates, as with VPP's _vec_set_grow_elts
+                (*hdr).grow_elts = (*hdr).grow_elts.saturating_add(1);
                 Some(ptr::read(self.as_ptr().add(len - 1)))
             }
         }
@@ -324,9 +340,10 @@ impl<T> VecRef<T> {
     pub unsafe fn set_len(&mut self, new_len: usize) {
         // SAFETY: The safety requirements are documented in the function's safety comment.
         unsafe {
-            debug_assert!(new_len <= self.capacity());
+            let capacity = self.capacity();
+            debug_assert!(new_len <= capacity);
             let hdr = self.as_vec_header_ptr();
-            let new_grow_elts = self.capacity() - new_len;
+            let new_grow_elts = capacity - new_len;
             (*hdr).len = new_len as u32;
             (*hdr).grow_elts = new_grow_elts.try_into().unwrap_or(u8::MAX);
         }
@@ -428,6 +445,19 @@ impl<T> Vec<T> {
         } else {
             // SAFETY: pointer is non-null and points to a VPP vector
             unsafe { VecRef::from_raw(self.as_ptr()).capacity() }
+        }
+    }
+
+    /// Returns the number of elements the vector can grow by
+    ///
+    /// This is the total number of elements that can be stored in the vector without calling
+    /// `_vec_resize_internal`.
+    fn grow_elts(&self) -> u8 {
+        if self.as_ptr().is_null() {
+            0
+        } else {
+            // SAFETY: pointer is non-null and points to a VPP vector
+            unsafe { VecRef::from_raw(self.as_ptr()).grow_elts() }
         }
     }
 
@@ -568,7 +598,7 @@ impl<T> Vec<T> {
     /// Panics if the new capacity overflows `u32`.
     pub fn push(&mut self, value: T) {
         let len = self.len();
-        if len == self.capacity() {
+        if self.grow_elts() == 0 {
             self.reserve(1);
         }
         // SAFETY: creation preconditions mean this is a valid object, and we have reserved
@@ -590,14 +620,13 @@ impl<T> Vec<T> {
     /// Panics if `index > len` or if the new capacity overflows `u32`.
     pub fn insert_mut(&mut self, index: usize, element: T) -> &mut T {
         let len = self.len();
-        let capacity = self.capacity();
 
         assert!(
             index <= len,
             "insertion index (is {index}) should be <= len (is {len})"
         );
 
-        if len == capacity {
+        if self.grow_elts() == 0 {
             self.reserve(1);
         }
         // SAFETY: creation preconditions mean this is a valid object, index is valid and we have
@@ -699,7 +728,7 @@ impl<T> Extend<T> for Vec<T> {
         let mut iter = iter.into_iter();
         while let Some(element) = iter.next() {
             let len = self.len();
-            if len == self.capacity() {
+            if self.grow_elts() == 0 {
                 let (lower, _) = iter.size_hint();
                 self.reserve(lower.saturating_add(1));
             }
@@ -720,7 +749,7 @@ impl<'a, T: Copy + 'a> Extend<&'a T> for Vec<T> {
         let mut iter = iter.into_iter();
         while let Some(element) = iter.next() {
             let len = self.len();
-            if len == self.capacity() {
+            if self.grow_elts() == 0 {
                 let (lower, _) = iter.size_hint();
                 self.reserve(lower.saturating_add(1));
             }
@@ -1242,6 +1271,66 @@ mod tests {
             v.capacity(),
             cap
         );
+    }
+
+    #[test]
+    fn clear_preserves_large_capacity() {
+        clib_mem_init();
+
+        let mut v = Vec::with_capacity(300);
+        for i in 0..300 {
+            v.push(i as u32);
+        }
+        let cap = v.capacity();
+        assert!(cap >= 300, "Capacity should be at least 300, got {}", cap);
+        v.clear();
+        assert_eq!(v.len(), 0);
+        assert_eq!(
+            v.capacity(),
+            cap,
+            "Capacity should be preserved after clear, expected {}, got {}",
+            cap,
+            v.capacity()
+        );
+    }
+
+    #[test]
+    fn pop_and_remove_with_large_spare_capacity() {
+        clib_mem_init();
+
+        // Leave more than 255 spare elements so that grow_elts saturates
+        let mut v = Vec::with_capacity(1000);
+        v.extend([1u32, 2, 3]);
+        assert_eq!(v.pop(), Some(3));
+        assert_eq!(v.remove(0), 1);
+        assert_eq!(&v[..], &[2]);
+        assert!(v.capacity() >= 1000);
+    }
+
+    #[test]
+    fn capacity_over_aligned() {
+        clib_mem_init();
+
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        #[repr(align(64))]
+        struct Aligned(u32);
+
+        // The vector data is padded for alignment, so the header size is larger than
+        // vec_header_t
+        let mut v = Vec::with_capacity(4);
+        let cap = v.capacity();
+        assert!(
+            (4..64).contains(&cap),
+            "Capacity should be at least 4 and plausible, got {}",
+            cap
+        );
+        assert_eq!(v.as_ptr() as usize % 64, 0);
+        assert_eq!(v.spare_capacity_mut().len(), cap);
+        for i in 0..cap {
+            v.push(Aligned(i as u32));
+        }
+        assert_eq!(v.capacity(), cap);
+        assert!(v.iter().enumerate().all(|(i, a)| a.0 == i as u32));
     }
 
     #[test]
