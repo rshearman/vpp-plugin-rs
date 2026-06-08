@@ -857,7 +857,7 @@ impl Alias {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ApiParser {
     global_types_by_name: IndexMap<String, Arc<TypeEntry>>,
 
@@ -878,19 +878,7 @@ impl ApiParser {
     pub fn new(filename: &str) -> Result<Self, Error> {
         let statements = parse_file(filename)?;
 
-        let mut me = Self {
-            global_types_by_name: Default::default(),
-            options: Default::default(),
-            messages: Default::default(),
-            services: Default::default(),
-            imports: Default::default(),
-            aliases: Default::default(),
-            unions: Default::default(),
-            types: Default::default(),
-            enums: Default::default(),
-            enumflags: Default::default(),
-            file_crc: 0,
-        };
+        let mut me = Self::default();
 
         me.do_imports(&statements)?;
         // Side effect: register types

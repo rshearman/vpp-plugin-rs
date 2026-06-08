@@ -56,20 +56,7 @@ impl fmt::Display for ip6_header_t {
 
 impl Clone for ip6_header_t {
     fn clone(&self) -> Self {
-        // SAFETY: if self is a valid reference then it must also be a valid pointer for reading
-        // its fields, and reading unaligned from a valid pointer is always safe
-        unsafe {
-            Self {
-                ip_version_traffic_class_and_flow_label: std::ptr::read_unaligned(
-                    std::ptr::addr_of!(self.ip_version_traffic_class_and_flow_label),
-                ),
-                payload_length: std::ptr::read_unaligned(std::ptr::addr_of!(self.payload_length)),
-                protocol: self.protocol,
-                hop_limit: self.hop_limit,
-                src_address: self.src_address,
-                dst_address: self.dst_address,
-            }
-        }
+        Self { ..*self }
     }
 }
 
