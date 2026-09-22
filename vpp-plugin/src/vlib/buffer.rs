@@ -220,8 +220,9 @@ impl<FeatureData> BufferRef<FeatureData> {
     /// # Usage guidance
     ///
     /// Note that the pointer returned may point to uninitialised data depending on the context.
-    /// In addition, depending on the context, the remaining data the amount is expected.
-    /// Finally, if remaining data is sufficent and it's initialised it may not have been validated
+    /// In addition, depending on the context, the amount of remaining data may be less than
+    /// expected.
+    /// Finally, if remaining data is sufficient and it's initialised it may not have been validated
     /// so care must be taken in determining whether or not lengths in the headers can be trusted.
     pub fn current_ptr_mut(&mut self) -> *mut u8 {
         let data = self.data().cast_mut();
