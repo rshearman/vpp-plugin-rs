@@ -213,7 +213,7 @@ pub const CLIB_LOG2_CACHE_LINE_BYTES: u32 = 6;
 pub const CLIB_N_PREFETCHES: u32 = 16;
 pub const CLIB_LIB_DIR: &[u8; 21] = b"lib/x86_64-linux-gnu\0";
 pub const CLIB_VECTOR_GROW_BY_ONE: u32 = 0;
-pub const CLIB_MAX_NUMAS: u32 = 16;
+pub const CLIB_MAX_NUMAS: u32 = 64;
 pub const CLIB_MEM_ERROR: i32 = -1;
 pub const CLIB_MEM_LOG2_MIN_ALIGN: u32 = 3;
 pub const CLIB_MEM_MIN_ALIGN: u32 = 8;
@@ -453,6 +453,8 @@ impl Default for clib_error_t {
         }
     }
 }
+pub type u8x16 = [u8_; 16usize];
+pub type u16x8 = [u16_; 8usize];
 pub type u64x2 = [u64_; 2usize];
 pub const clib_mem_page_sz_t_CLIB_MEM_PAGE_SZ_UNKNOWN: clib_mem_page_sz_t = 0;
 pub const clib_mem_page_sz_t_CLIB_MEM_PAGE_SZ_DEFAULT: clib_mem_page_sz_t = 1;
@@ -522,7 +524,7 @@ pub struct clib_mem_main_t {
     pub log2_sys_default_hugepage_sz: clib_mem_page_sz_t,
     pub _bitfield_align_1: [u8; 0],
     pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
-    pub numa_node_bitmap: u32_,
+    pub numa_node_bitmap: u64_,
     pub first_map: *mut clib_mem_vm_map_hdr_t,
     pub last_map: *mut clib_mem_vm_map_hdr_t,
     pub map_lock: u8_,
@@ -951,7 +953,7 @@ pub struct clib_mem_page_stats_t {
     pub total: uword,
     pub populated: uword,
     pub not_populated: uword,
-    pub per_numa: [uword; 16usize],
+    pub per_numa: [uword; 64usize],
     pub unknown: uword,
 }
 impl Default for clib_mem_page_stats_t {
@@ -1244,6 +1246,9 @@ unsafe extern "C" {
 unsafe extern "C" {
     pub fn format(s: *mut u8_, format: *const ::std::os::raw::c_char, ...) -> *mut u8_;
 }
+unsafe extern "C" {
+    pub fn format_get_visible_length(s: *mut u8_) -> u32_;
+}
 pub type FILE = _IO_FILE;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -1365,6 +1370,9 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     pub fn format_ucontext_pc(s: *mut u8_, va: *mut va_list) -> *mut u8_;
+}
+unsafe extern "C" {
+    pub fn format_backtrace(s: *mut u8_, va: *mut va_list) -> *mut u8_;
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -1498,6 +1506,9 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     pub fn format_uword_bitmap(s: *mut u8_, va: *mut va_list) -> *mut u8_;
+}
+unsafe extern "C" {
+    pub fn format_hexdump_trunc(s: *mut u8_, va: *mut va_list) -> *mut u8_;
 }
 unsafe extern "C" {
     pub fn unformat_init_clib_file(
@@ -2521,16 +2532,11 @@ unsafe extern "C" {
 }
 pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE: clib_march_variant_type_t = 0;
 pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_scalar: clib_march_variant_type_t = 1;
-pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_hsw: clib_march_variant_type_t = 2;
-pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_trm: clib_march_variant_type_t = 3;
-pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_skx: clib_march_variant_type_t = 4;
-pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_icl: clib_march_variant_type_t = 5;
-pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_adl: clib_march_variant_type_t = 6;
-pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_spr: clib_march_variant_type_t = 7;
-pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_znver3: clib_march_variant_type_t = 8;
-pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_znver4: clib_march_variant_type_t = 9;
-pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_znver5: clib_march_variant_type_t = 10;
-pub const clib_march_variant_type_t_CLIB_MARCH_TYPE_N_VARIANTS: clib_march_variant_type_t = 11;
+pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_x86_64_v3: clib_march_variant_type_t =
+    2;
+pub const clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_x86_64_v4: clib_march_variant_type_t =
+    3;
+pub const clib_march_variant_type_t_CLIB_MARCH_TYPE_N_VARIANTS: clib_march_variant_type_t = 4;
 pub type clib_march_variant_type_t = ::std::os::raw::c_uint;
 #[repr(C)]
 #[derive(Debug, Default)]
@@ -3646,6 +3652,7 @@ pub struct vlib_main_t {
     pub elog_trace_cli_commands: ::std::os::raw::c_int,
     pub elog_trace_graph_dispatch: ::std::os::raw::c_int,
     pub elog_trace_graph_circuit: ::std::os::raw::c_int,
+    pub elog_trace_tw_expiration: ::std::os::raw::c_int,
     pub elog_trace_graph_circuit_node_index: u32_,
     pub node_call_elog_event_types: *mut elog_event_type_t,
     pub node_return_elog_event_types: *mut elog_event_type_t,
@@ -3685,7 +3692,7 @@ pub struct vlib_main_t {
     pub barrier_perf_callbacks_tmp: *mut ::std::option::Option<
         unsafe extern "C" fn(arg1: *mut vlib_main_t, t: u64_, leave: ::std::os::raw::c_int),
     >,
-    pub check_frame_queues: uword,
+    pub check_frame_queues: u8_,
     pub pending_rpc_requests: *mut uword,
     pub processing_rpc_requests: *mut uword,
     pub pending_rpc_lock: clib_spinlock_t,
@@ -3695,6 +3702,24 @@ pub struct vlib_main_t {
     pub n_tw_timers: u32_,
 }
 impl Default for vlib_main_t {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+pub type vlib_worker_thread_one_time_release_fn_t =
+    ::std::option::Option<unsafe extern "C" fn(vm: *mut vlib_main_t, arg: uword)>;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct vlib_worker_thread_one_time_release_fn_elt_t {
+    pub next: *mut vlib_worker_thread_one_time_release_fn_elt_t,
+    pub fn_: vlib_worker_thread_one_time_release_fn_t,
+    pub arg: uword,
+}
+impl Default for vlib_worker_thread_one_time_release_fn_elt_t {
     fn default() -> Self {
         let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
         unsafe {
@@ -3714,6 +3739,7 @@ pub struct vlib_global_main_t {
     pub argv: *mut *mut u8_,
     pub startup_config: *mut u8_,
     pub post_mortem_callbacks: *mut ::std::option::Option<unsafe extern "C" fn()>,
+    pub worker_thread_one_time_release_fns: *mut vlib_worker_thread_one_time_release_fn_elt_t,
     pub need_vlib_worker_thread_node_runtime_update: ::std::os::raw::c_int,
     pub cli_main: vlib_cli_main_t,
     pub node_registrations: *mut vlib_node_registration_t,
@@ -3999,6 +4025,12 @@ unsafe extern "C" {
     pub fn vlib_worker_thread_barrier_release(vm: *mut vlib_main_t);
 }
 unsafe extern "C" {
+    pub fn vlib_worker_thread_register_one_time_release_fn(
+        fn_: vlib_worker_thread_one_time_release_fn_t,
+        arg: uword,
+    );
+}
+unsafe extern "C" {
     pub fn vlib_worker_thread_barrier_held() -> u8_;
 }
 unsafe extern "C" {
@@ -4060,9 +4092,6 @@ unsafe extern "C" {
     pub fn vlib_thread_stack_init(thread_index: uword) -> *mut u8_;
 }
 unsafe extern "C" {
-    pub static mut rpc_call_main_thread_cb_fn: *mut ::std::os::raw::c_void;
-}
-unsafe extern "C" {
     pub fn vlib_process_signal_event_mt_helper(args: *mut vlib_process_signal_event_mt_args_t);
 }
 unsafe extern "C" {
@@ -4071,6 +4100,16 @@ unsafe extern "C" {
         args: *mut u8_,
         size: u32_,
     );
+}
+unsafe extern "C" {
+    pub fn vlib_force_rpc_call_main_thread(
+        function: *mut ::std::os::raw::c_void,
+        args: *mut u8_,
+        size: u32_,
+    );
+}
+unsafe extern "C" {
+    pub fn vlib_rpc_call_main_thread_process(vm: *mut vlib_main_t);
 }
 unsafe extern "C" {
     pub fn vlib_get_thread_core_numa(w: *mut vlib_worker_thread_t, cpu_id: ::std::os::raw::c_uint);
@@ -4122,6 +4161,28 @@ pub type vlib_buffer_enqueue_to_single_next_with_aux_fn_t = ::std::option::Optio
         count: u32_,
     ),
 >;
+pub type vlib_buffer_enqueue_to_single_next_with_aux64_fn_t = ::std::option::Option<
+    unsafe extern "C" fn(
+        vm: *mut vlib_main_t,
+        node: *mut vlib_node_runtime_t,
+        ers: *mut u32_,
+        aux_data: *mut u64_,
+        next_index: u16_,
+        count: u32_,
+    ),
+>;
+pub type vlib_buffer_enqueue_to_single_next_with_aux64_and_scalar_fn_t = ::std::option::Option<
+    unsafe extern "C" fn(
+        vm: *mut vlib_main_t,
+        node: *mut vlib_node_runtime_t,
+        buffers: *mut u32_,
+        aux_data: *mut u64_,
+        scalar_data: *mut ::std::os::raw::c_void,
+        scalar_size: u16_,
+        next_index: u16_,
+        count: u32_,
+    ),
+>;
 pub type vlib_buffer_enqueue_to_thread_fn_t = ::std::option::Option<
     unsafe extern "C" fn(
         vm: *mut vlib_main_t,
@@ -4131,6 +4192,16 @@ pub type vlib_buffer_enqueue_to_thread_fn_t = ::std::option::Option<
         thread_indices: *mut u16_,
         n_packets: u32_,
         drop_on_congestion: ::std::os::raw::c_int,
+    ) -> u32_,
+>;
+pub type vlib_buffer_enqueue_to_single_thread_fn_t = ::std::option::Option<
+    unsafe extern "C" fn(
+        vm: *mut vlib_main_t,
+        node: *mut vlib_node_runtime_t,
+        frame_queue_index: u32_,
+        buffer_indices: *mut u32_,
+        thread_index: clib_thread_index_t,
+        n_packets: u32_,
     ) -> u32_,
 >;
 pub type vlib_buffer_enqueue_to_thread_with_aux_fn_t = ::std::option::Option<
@@ -4152,7 +4223,12 @@ pub struct vlib_buffer_func_main_t {
     pub buffer_enqueue_to_next_with_aux_fn: vlib_buffer_enqueue_to_next_with_aux_fn_t,
     pub buffer_enqueue_to_single_next_fn: vlib_buffer_enqueue_to_single_next_fn_t,
     pub buffer_enqueue_to_single_next_with_aux_fn: vlib_buffer_enqueue_to_single_next_with_aux_fn_t,
+    pub buffer_enqueue_to_single_next_with_aux64_fn:
+        vlib_buffer_enqueue_to_single_next_with_aux64_fn_t,
+    pub buffer_enqueue_to_single_next_with_aux64_and_scalar_fn:
+        vlib_buffer_enqueue_to_single_next_with_aux64_and_scalar_fn_t,
     pub buffer_enqueue_to_thread_fn: vlib_buffer_enqueue_to_thread_fn_t,
+    pub buffer_enqueue_to_single_thread_fn: vlib_buffer_enqueue_to_single_thread_fn_t,
     pub buffer_enqueue_to_thread_with_aux_fn: vlib_buffer_enqueue_to_thread_with_aux_fn_t,
 }
 unsafe extern "C" {
@@ -4360,7 +4436,7 @@ pub struct vnet_buffer_opaque_t {
     pub l2_hdr_offset: i16_,
     pub l3_hdr_offset: i16_,
     pub l4_hdr_offset: i16_,
-    pub feature_arc_index: u8_,
+    pub _unused: u8_,
     pub _bitfield_align_1: [u8; 0],
     pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
     pub __bindgen_anon_1: vnet_buffer_opaque_t__bindgen_ty_1,
@@ -4901,41 +4977,36 @@ impl vnet_buffer_opaque_t {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct vnet_buffer_opaque2_t {
-    pub qos: vnet_buffer_opaque2_t__bindgen_ty_1,
-    pub loop_counter: u8_,
-    pub pad: [u8_; 5usize],
-    pub __bindgen_anon_1: vnet_buffer_opaque2_t__bindgen_ty_2,
-    pub nat: vnet_buffer_opaque2_t__bindgen_ty_3,
-    pub ip: vnet_buffer_opaque2_t__bindgen_ty_4,
-    pub unused: [u32_; 5usize],
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct vnet_buffer_opaque2_t__bindgen_ty_1 {
-    pub bits: u8_,
-    pub source: u8_,
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct vnet_buffer_opaque2_t__bindgen_ty_2 {
+    pub __bindgen_anon_1: vnet_buffer_opaque2_t__bindgen_ty_1,
+    pub ip: vnet_buffer_opaque2_t__bindgen_ty_2,
     pub gso_size: u16_,
     pub gso_l4_hdr_sz: u16_,
     pub outer_l3_hdr_offset: i16_,
     pub outer_l4_hdr_offset: i16_,
+    pub qos: vnet_buffer_opaque2_t__bindgen_ty_3,
+    pub loop_counter: u8_,
+    pub unused8: u8_,
+    pub unused: [u32_; 6usize],
 }
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct vnet_buffer_opaque2_t__bindgen_ty_3 {
+pub union vnet_buffer_opaque2_t__bindgen_ty_1 {
+    pub nat: vnet_buffer_opaque2_t__bindgen_ty_1__bindgen_ty_1,
+    pub session: vnet_buffer_opaque2_t__bindgen_ty_1__bindgen_ty_2,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vnet_buffer_opaque2_t__bindgen_ty_1__bindgen_ty_1 {
     pub arc_next: u32_,
-    pub __bindgen_anon_1: vnet_buffer_opaque2_t__bindgen_ty_3__bindgen_ty_1,
+    pub __bindgen_anon_1: vnet_buffer_opaque2_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1,
 }
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub union vnet_buffer_opaque2_t__bindgen_ty_3__bindgen_ty_1 {
+pub union vnet_buffer_opaque2_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1 {
     pub cached_session_index: u32_,
     pub cached_dst_nat_session_index: u32_,
 }
-impl Default for vnet_buffer_opaque2_t__bindgen_ty_3__bindgen_ty_1 {
+impl Default for vnet_buffer_opaque2_t__bindgen_ty_1__bindgen_ty_1__bindgen_ty_1 {
     fn default() -> Self {
         let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
         unsafe {
@@ -4944,7 +5015,183 @@ impl Default for vnet_buffer_opaque2_t__bindgen_ty_3__bindgen_ty_1 {
         }
     }
 }
-impl Default for vnet_buffer_opaque2_t__bindgen_ty_3 {
+impl Default for vnet_buffer_opaque2_t__bindgen_ty_1__bindgen_ty_1 {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[repr(align(8))]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_buffer_opaque2_t__bindgen_ty_1__bindgen_ty_2 {
+    pub _bitfield_align_1: [u32; 0],
+    pub _bitfield_1: __BindgenBitfieldUnit<[u8; 5usize]>,
+}
+impl vnet_buffer_opaque2_t__bindgen_ty_1__bindgen_ty_2 {
+    #[inline]
+    pub fn rrw_next_index(&self) -> u64_ {
+        unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 24u8) as u64) }
+    }
+    #[inline]
+    pub fn set_rrw_next_index(&mut self, val: u64_) {
+        unsafe {
+            let val: u64 = ::std::mem::transmute(val);
+            self._bitfield_1.set(0usize, 24u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn rrw_next_index_raw(this: *const Self) -> u64_ {
+        unsafe {
+            ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 5usize]>>::raw_get(
+                ::std::ptr::addr_of!((*this)._bitfield_1),
+                0usize,
+                24u8,
+            ) as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_rrw_next_index_raw(this: *mut Self, val: u64_) {
+        unsafe {
+            let val: u64 = ::std::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 5usize]>>::raw_set(
+                ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                0usize,
+                24u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn rrw_next_node(&self) -> u64_ {
+        unsafe { ::std::mem::transmute(self._bitfield_1.get(24usize, 8u8) as u64) }
+    }
+    #[inline]
+    pub fn set_rrw_next_node(&mut self, val: u64_) {
+        unsafe {
+            let val: u64 = ::std::mem::transmute(val);
+            self._bitfield_1.set(24usize, 8u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn rrw_next_node_raw(this: *const Self) -> u64_ {
+        unsafe {
+            ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 5usize]>>::raw_get(
+                ::std::ptr::addr_of!((*this)._bitfield_1),
+                24usize,
+                8u8,
+            ) as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_rrw_next_node_raw(this: *mut Self, val: u64_) {
+        unsafe {
+            let val: u64 = ::std::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 5usize]>>::raw_set(
+                ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                24usize,
+                8u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn state(&self) -> u64_ {
+        unsafe { ::std::mem::transmute(self._bitfield_1.get(32usize, 4u8) as u64) }
+    }
+    #[inline]
+    pub fn set_state(&mut self, val: u64_) {
+        unsafe {
+            let val: u64 = ::std::mem::transmute(val);
+            self._bitfield_1.set(32usize, 4u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn state_raw(this: *const Self) -> u64_ {
+        unsafe {
+            ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 5usize]>>::raw_get(
+                ::std::ptr::addr_of!((*this)._bitfield_1),
+                32usize,
+                4u8,
+            ) as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_state_raw(this: *mut Self, val: u64_) {
+        unsafe {
+            let val: u64 = ::std::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 5usize]>>::raw_set(
+                ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                32usize,
+                4u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn flags(&self) -> u64_ {
+        unsafe { ::std::mem::transmute(self._bitfield_1.get(36usize, 4u8) as u64) }
+    }
+    #[inline]
+    pub fn set_flags(&mut self, val: u64_) {
+        unsafe {
+            let val: u64 = ::std::mem::transmute(val);
+            self._bitfield_1.set(36usize, 4u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn flags_raw(this: *const Self) -> u64_ {
+        unsafe {
+            ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 5usize]>>::raw_get(
+                ::std::ptr::addr_of!((*this)._bitfield_1),
+                36usize,
+                4u8,
+            ) as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_flags_raw(this: *mut Self, val: u64_) {
+        unsafe {
+            let val: u64 = ::std::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 5usize]>>::raw_set(
+                ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                36usize,
+                4u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn new_bitfield_1(
+        rrw_next_index: u64_,
+        rrw_next_node: u64_,
+        state: u64_,
+        flags: u64_,
+    ) -> __BindgenBitfieldUnit<[u8; 5usize]> {
+        let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 5usize]> = Default::default();
+        __bindgen_bitfield_unit.set(0usize, 24u8, {
+            let rrw_next_index: u64 = unsafe { ::std::mem::transmute(rrw_next_index) };
+            rrw_next_index as u64
+        });
+        __bindgen_bitfield_unit.set(24usize, 8u8, {
+            let rrw_next_node: u64 = unsafe { ::std::mem::transmute(rrw_next_node) };
+            rrw_next_node as u64
+        });
+        __bindgen_bitfield_unit.set(32usize, 4u8, {
+            let state: u64 = unsafe { ::std::mem::transmute(state) };
+            state as u64
+        });
+        __bindgen_bitfield_unit.set(36usize, 4u8, {
+            let flags: u64 = unsafe { ::std::mem::transmute(flags) };
+            flags as u64
+        });
+        __bindgen_bitfield_unit
+    }
+}
+impl Default for vnet_buffer_opaque2_t__bindgen_ty_1 {
     fn default() -> Self {
         let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
         unsafe {
@@ -4955,15 +5202,21 @@ impl Default for vnet_buffer_opaque2_t__bindgen_ty_3 {
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
-pub struct vnet_buffer_opaque2_t__bindgen_ty_4 {
-    pub reass: vnet_buffer_opaque2_t__bindgen_ty_4__bindgen_ty_1,
+pub struct vnet_buffer_opaque2_t__bindgen_ty_2 {
+    pub reass: vnet_buffer_opaque2_t__bindgen_ty_2__bindgen_ty_1,
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
-pub struct vnet_buffer_opaque2_t__bindgen_ty_4__bindgen_ty_1 {
+pub struct vnet_buffer_opaque2_t__bindgen_ty_2__bindgen_ty_1 {
     pub thread_index: clib_thread_index_t,
     pub pool_index: u32_,
     pub id: u32_,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_buffer_opaque2_t__bindgen_ty_3 {
+    pub bits: u8_,
+    pub source: u8_,
 }
 impl Default for vnet_buffer_opaque2_t {
     fn default() -> Self {
@@ -5034,6 +5287,7 @@ pub struct vnet_config_main_t {
     pub config_pool: *mut vnet_config_t,
     pub config_string_hash: *mut uword,
     pub config_string_heap: *mut u32_,
+    pub external_string_heap_ptr: *mut *mut u32_,
     pub start_node_indices: *mut u32_,
     pub end_node_indices_by_user_index: *mut u32_,
     pub default_end_node_index: u32_,
@@ -5050,6 +5304,367 @@ impl Default for vnet_config_main_t {
         }
     }
 }
+pub type clib_file_function_t =
+    ::std::option::Option<unsafe extern "C" fn(f: *mut clib_file) -> *mut clib_error_t>;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct clib_file {
+    pub file_descriptor: u32_,
+    pub flags: u16_,
+    pub _bitfield_align_1: [u8; 0],
+    pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
+    pub polling_thread_index: u32_,
+    pub index: u32_,
+    pub private_data: u64_,
+    pub read_function: clib_file_function_t,
+    pub write_function: clib_file_function_t,
+    pub error_function: clib_file_function_t,
+    pub description: *mut u8_,
+    pub read_events: u64_,
+    pub write_events: u64_,
+    pub error_events: u64_,
+}
+impl Default for clib_file {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+impl clib_file {
+    #[inline]
+    pub fn active(&self) -> u16_ {
+        unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u16) }
+    }
+    #[inline]
+    pub fn set_active(&mut self, val: u16_) {
+        unsafe {
+            let val: u16 = ::std::mem::transmute(val);
+            self._bitfield_1.set(0usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn active_raw(this: *const Self) -> u16_ {
+        unsafe {
+            ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                ::std::ptr::addr_of!((*this)._bitfield_1),
+                0usize,
+                1u8,
+            ) as u16)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_active_raw(this: *mut Self, val: u16_) {
+        unsafe {
+            let val: u16 = ::std::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                0usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn dont_close(&self) -> u16_ {
+        unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u16) }
+    }
+    #[inline]
+    pub fn set_dont_close(&mut self, val: u16_) {
+        unsafe {
+            let val: u16 = ::std::mem::transmute(val);
+            self._bitfield_1.set(1usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
+    pub unsafe fn dont_close_raw(this: *const Self) -> u16_ {
+        unsafe {
+            ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
+                ::std::ptr::addr_of!((*this)._bitfield_1),
+                1usize,
+                1u8,
+            ) as u16)
+        }
+    }
+    #[inline]
+    pub unsafe fn set_dont_close_raw(this: *mut Self, val: u16_) {
+        unsafe {
+            let val: u16 = ::std::mem::transmute(val);
+            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
+                ::std::ptr::addr_of_mut!((*this)._bitfield_1),
+                1usize,
+                1u8,
+                val as u64,
+            )
+        }
+    }
+    #[inline]
+    pub fn new_bitfield_1(active: u16_, dont_close: u16_) -> __BindgenBitfieldUnit<[u8; 1usize]> {
+        let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> = Default::default();
+        __bindgen_bitfield_unit.set(0usize, 1u8, {
+            let active: u16 = unsafe { ::std::mem::transmute(active) };
+            active as u64
+        });
+        __bindgen_bitfield_unit.set(1usize, 1u8, {
+            let dont_close: u16 = unsafe { ::std::mem::transmute(dont_close) };
+            dont_close as u64
+        });
+        __bindgen_bitfield_unit
+    }
+}
+pub type clib_file_t = clib_file;
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vnet_tm_node_params_ {
+    pub shaper_profile_id: i32_,
+    pub __bindgen_anon_1: vnet_tm_node_params___bindgen_ty_1,
+    pub level: u32_,
+    pub data: *mut ::std::os::raw::c_void,
+    pub id: u32_,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union vnet_tm_node_params___bindgen_ty_1 {
+    pub leaf: vnet_tm_node_params___bindgen_ty_1__bindgen_ty_1,
+    pub nonleaf: vnet_tm_node_params___bindgen_ty_1__bindgen_ty_2,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_tm_node_params___bindgen_ty_1__bindgen_ty_1 {
+    pub ingress_q_len: u32_,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct vnet_tm_node_params___bindgen_ty_1__bindgen_ty_2 {
+    pub num_sp_priorities: u32_,
+    pub sched_pkt_mode: *mut u8_,
+}
+impl Default for vnet_tm_node_params___bindgen_ty_1__bindgen_ty_2 {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+impl Default for vnet_tm_node_params___bindgen_ty_1 {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+impl Default for vnet_tm_node_params_ {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+pub type vnet_tm_node_params_t = vnet_tm_node_params_;
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_tm_shaper_params_ {
+    pub commit: vnet_tm_shaper_params___bindgen_ty_1,
+    pub peak: vnet_tm_shaper_params___bindgen_ty_2,
+    pub pkt_len_adj: i32_,
+    pub pkt_mode: u8_,
+    pub shaper_id: u32_,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_tm_shaper_params___bindgen_ty_1 {
+    pub rate: u64_,
+    pub burst_size: u64_,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_tm_shaper_params___bindgen_ty_2 {
+    pub rate: u64_,
+    pub burst_size: u64_,
+}
+pub type vnet_tm_shaper_params_t = vnet_tm_shaper_params_;
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_tm_capa_params_ {
+    pub n_nodes_max: u32_,
+    pub n_levels_max: u32_,
+    pub non_leaf_nodes_identical: i32_,
+    pub leaf_nodes_identical: i32_,
+    pub shaper_n_max: u32_,
+    pub shaper_private_n_max: u32_,
+    pub shaper_private_dual_rate_n_max: i32_,
+    pub shaper_private_rate_min: u64_,
+    pub shaper_private_rate_max: u64_,
+    pub shaper_private_packet_mode_supported: i32_,
+    pub shaper_private_byte_mode_supported: i32_,
+    pub shaper_pkt_length_adjust_min: i32_,
+    pub shaper_pkt_length_adjust_max: i32_,
+    pub sched_n_children_max: u32_,
+    pub sched_sp_n_priorities_max: u32_,
+    pub sched_wfq_n_children_per_group_max: u32_,
+    pub sched_wfq_n_groups_max: u32_,
+    pub sched_wfq_weight_max: u32_,
+    pub sched_wfq_packet_mode_supported: i32_,
+    pub sched_wfq_byte_mode_supported: i32_,
+}
+pub type vnet_tm_capa_params_t = vnet_tm_capa_params_;
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vnet_tm_level_capa_params_ {
+    pub n_nodes_max: u32_,
+    pub n_nodes_nonleaf_max: u32_,
+    pub n_nodes_leaf_max: u32_,
+    pub non_leaf_nodes_identical: i32_,
+    pub leaf_nodes_identical: i32_,
+    pub __bindgen_anon_1: vnet_tm_level_capa_params___bindgen_ty_1,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union vnet_tm_level_capa_params___bindgen_ty_1 {
+    pub nonleaf: vnet_tm_level_capa_params___bindgen_ty_1__bindgen_ty_1,
+    pub leaf: vnet_tm_level_capa_params___bindgen_ty_1__bindgen_ty_2,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_tm_level_capa_params___bindgen_ty_1__bindgen_ty_1 {
+    pub shaper_private_supported: i32_,
+    pub shaper_private_dual_rate_supported: i32_,
+    pub shaper_private_rate_min: u64_,
+    pub shaper_private_rate_max: u64_,
+    pub shaper_private_packet_mode_supported: i32_,
+    pub shaper_private_byte_mode_supported: i32_,
+    pub sched_n_children_max: u32_,
+    pub sched_sp_n_priorities_max: u32_,
+    pub sched_wfq_n_children_per_group_max: u32_,
+    pub sched_wfq_n_groups_max: u32_,
+    pub sched_wfq_weight_max: u32_,
+    pub sched_wfq_packet_mode_supported: i32_,
+    pub sched_wfq_byte_mode_supported: i32_,
+    pub stats_mask: u64_,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_tm_level_capa_params___bindgen_ty_1__bindgen_ty_2 {
+    pub shaper_private_supported: i32_,
+    pub shaper_private_dual_rate_supported: i32_,
+    pub shaper_private_rate_min: u64_,
+    pub shaper_private_rate_max: u64_,
+    pub shaper_private_packet_mode_supported: i32_,
+    pub shaper_private_byte_mode_supported: i32_,
+}
+impl Default for vnet_tm_level_capa_params___bindgen_ty_1 {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+impl Default for vnet_tm_level_capa_params_ {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+pub type vnet_tm_level_capa_params_t = vnet_tm_level_capa_params_;
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_tm_stats_params_ {
+    pub n_pkts: u64_,
+    pub n_bytes: u64_,
+    pub leaf: vnet_tm_stats_params___bindgen_ty_1,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_tm_stats_params___bindgen_ty_1 {
+    pub n_pkts_dropped: [u64_; 3usize],
+    pub n_bytes_dropped: [u64_; 3usize],
+    pub n_pkts_queued: u64_,
+    pub n_bytes_queued: u64_,
+}
+pub type vnet_tm_stats_params_t = vnet_tm_stats_params_;
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct vnet_tm_system_t_ {
+    pub hw_if_idx: u32_,
+    pub node_add: ::std::option::Option<
+        unsafe extern "C" fn(
+            hw_if_idx: u32_,
+            node_id: u32_,
+            parent_node_id: i32_,
+            priority: u32_,
+            weight: u32_,
+            lvl: u32_,
+            params: *mut vnet_tm_node_params_t,
+            flow_name: *const ::std::os::raw::c_char,
+        ) -> ::std::os::raw::c_int,
+    >,
+    pub node_suspend: ::std::option::Option<
+        unsafe extern "C" fn(hw_if_idx: u32_, node_idx: u32_) -> ::std::os::raw::c_int,
+    >,
+    pub node_resume: ::std::option::Option<
+        unsafe extern "C" fn(hw_if_idx: u32_, node_idx: u32_) -> ::std::os::raw::c_int,
+    >,
+    pub node_delete: ::std::option::Option<
+        unsafe extern "C" fn(hw_if_idx: u32_, node_idx: u32_) -> ::std::os::raw::c_int,
+    >,
+    pub shaper_profile_create: ::std::option::Option<
+        unsafe extern "C" fn(
+            hw_if_idx: u32_,
+            param: *mut vnet_tm_shaper_params_t,
+        ) -> ::std::os::raw::c_int,
+    >,
+    pub shaper_profile_delete: ::std::option::Option<
+        unsafe extern "C" fn(hw_if_idx: u32_, shaper_id: i32_) -> ::std::os::raw::c_int,
+    >,
+    pub node_shaper_update: ::std::option::Option<
+        unsafe extern "C" fn(
+            hw_if_idx: u32_,
+            node_id: u32_,
+            shaper_profile_id: i32_,
+        ) -> ::std::os::raw::c_int,
+    >,
+    pub node_sched_weight_update: ::std::option::Option<
+        unsafe extern "C" fn(hw_if_idx: u32_, node_id: u32_, weight: u32_) -> ::std::os::raw::c_int,
+    >,
+    pub node_read_stats: ::std::option::Option<
+        unsafe extern "C" fn(
+            hw_if_idx: u32_,
+            node_idx: u32_,
+            param: *mut vnet_tm_stats_params_t,
+        ) -> ::std::os::raw::c_int,
+    >,
+    pub tm_get_capabilities: ::std::option::Option<
+        unsafe extern "C" fn(
+            hw_if_idx: u32_,
+            capa_param: *mut vnet_tm_capa_params_t,
+        ) -> ::std::os::raw::c_int,
+    >,
+    pub tm_level_get_capabilities: ::std::option::Option<
+        unsafe extern "C" fn(
+            hw_if_idx: u32_,
+            cap: *mut vnet_tm_level_capa_params_t,
+            lvl: u32_,
+        ) -> ::std::os::raw::c_int,
+    >,
+    pub start_tm:
+        ::std::option::Option<unsafe extern "C" fn(hw_if_idx: u32_) -> ::std::os::raw::c_int>,
+    pub stop_tm:
+        ::std::option::Option<unsafe extern "C" fn(hw_if_idx: u32_) -> ::std::os::raw::c_int>,
+}
+pub type vnet_tm_system_t = vnet_tm_system_t_;
 pub const vnet_hash_fn_type_t_VNET_HASH_FN_TYPE_ETHERNET: vnet_hash_fn_type_t = 0;
 pub const vnet_hash_fn_type_t_VNET_HASH_FN_TYPE_IP4: vnet_hash_fn_type_t = 1;
 pub const vnet_hash_fn_type_t_VNET_HASH_FN_TYPE_IP6: vnet_hash_fn_type_t = 2;
@@ -5251,6 +5866,7 @@ pub struct _vnet_device_class {
     pub mac_addr_add_del_function: vnet_interface_add_del_mac_address_function_t,
     pub set_rss_queues_function: vnet_interface_rss_queues_set_t,
     pub eeprom_read_function: vnet_interface_eeprom_read_t,
+    pub vnet_tm_sys_impl: *mut vnet_tm_system_t,
 }
 impl Default for _vnet_device_class {
     fn default() -> Self {
@@ -6118,6 +6734,7 @@ pub struct vnet_interface_main_t {
     pub per_thread_data: *mut vnet_interface_per_thread_data_t,
     pub output_feature_arc_index: u8_,
     pub drop_feature_arc_index: u8_,
+    pub default_rx_mode: vnet_hw_if_rx_mode,
     pub hw_if_index_by_sw_if_index: *mut u32_,
     pub if_out_arc_end_next_index_by_sw_if_index: *mut u16_,
 }
@@ -6448,6 +7065,7 @@ pub struct vnet_feature_main_t {
     pub next_constraint_by_arc: *mut *mut vnet_feature_constraint_registration_t,
     pub next_feature_by_name: *mut *mut uword,
     pub feature_config_mains: *mut vnet_feature_config_main_t,
+    pub shared_feature_config_heap: *mut u32_,
     pub feature_nodes: *mut *mut *mut ::std::os::raw::c_char,
     pub sw_if_index_has_features: *mut *mut uword,
     pub feature_count_by_sw_if_index: *mut *mut i16_,
@@ -6557,117 +7175,6 @@ unsafe extern "C" {
         sw_if_index: u32_,
     ) -> ::std::os::raw::c_int;
 }
-pub type clib_file_function_t =
-    ::std::option::Option<unsafe extern "C" fn(f: *mut clib_file) -> *mut clib_error_t>;
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct clib_file {
-    pub file_descriptor: u32_,
-    pub flags: u16_,
-    pub _bitfield_align_1: [u8; 0],
-    pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
-    pub polling_thread_index: u32_,
-    pub index: u32_,
-    pub private_data: u64_,
-    pub read_function: clib_file_function_t,
-    pub write_function: clib_file_function_t,
-    pub error_function: clib_file_function_t,
-    pub description: *mut u8_,
-    pub read_events: u64_,
-    pub write_events: u64_,
-    pub error_events: u64_,
-}
-impl Default for clib_file {
-    fn default() -> Self {
-        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
-        unsafe {
-            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
-            s.assume_init()
-        }
-    }
-}
-impl clib_file {
-    #[inline]
-    pub fn active(&self) -> u16_ {
-        unsafe { ::std::mem::transmute(self._bitfield_1.get(0usize, 1u8) as u16) }
-    }
-    #[inline]
-    pub fn set_active(&mut self, val: u16_) {
-        unsafe {
-            let val: u16 = ::std::mem::transmute(val);
-            self._bitfield_1.set(0usize, 1u8, val as u64)
-        }
-    }
-    #[inline]
-    pub unsafe fn active_raw(this: *const Self) -> u16_ {
-        unsafe {
-            ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
-                ::std::ptr::addr_of!((*this)._bitfield_1),
-                0usize,
-                1u8,
-            ) as u16)
-        }
-    }
-    #[inline]
-    pub unsafe fn set_active_raw(this: *mut Self, val: u16_) {
-        unsafe {
-            let val: u16 = ::std::mem::transmute(val);
-            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
-                ::std::ptr::addr_of_mut!((*this)._bitfield_1),
-                0usize,
-                1u8,
-                val as u64,
-            )
-        }
-    }
-    #[inline]
-    pub fn dont_close(&self) -> u16_ {
-        unsafe { ::std::mem::transmute(self._bitfield_1.get(1usize, 1u8) as u16) }
-    }
-    #[inline]
-    pub fn set_dont_close(&mut self, val: u16_) {
-        unsafe {
-            let val: u16 = ::std::mem::transmute(val);
-            self._bitfield_1.set(1usize, 1u8, val as u64)
-        }
-    }
-    #[inline]
-    pub unsafe fn dont_close_raw(this: *const Self) -> u16_ {
-        unsafe {
-            ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
-                ::std::ptr::addr_of!((*this)._bitfield_1),
-                1usize,
-                1u8,
-            ) as u16)
-        }
-    }
-    #[inline]
-    pub unsafe fn set_dont_close_raw(this: *mut Self, val: u16_) {
-        unsafe {
-            let val: u16 = ::std::mem::transmute(val);
-            <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
-                ::std::ptr::addr_of_mut!((*this)._bitfield_1),
-                1usize,
-                1u8,
-                val as u64,
-            )
-        }
-    }
-    #[inline]
-    pub fn new_bitfield_1(active: u16_, dont_close: u16_) -> __BindgenBitfieldUnit<[u8; 1usize]> {
-        let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> = Default::default();
-        __bindgen_bitfield_unit.set(0usize, 1u8, {
-            let active: u16 = unsafe { ::std::mem::transmute(active) };
-            active as u64
-        });
-        __bindgen_bitfield_unit.set(1usize, 1u8, {
-            let dont_close: u16 = unsafe { ::std::mem::transmute(dont_close) };
-            dont_close as u64
-        });
-        __bindgen_bitfield_unit
-    }
-}
-pub type clib_file_t = clib_file;
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct stat {
@@ -8134,13 +8641,6 @@ unsafe extern "C" {
         config: *mut vl_api_shm_elem_config_t,
         is_vlib: ::std::os::raw::c_int,
         is_private_region: ::std::os::raw::c_int,
-    );
-}
-unsafe extern "C" {
-    pub fn vl_api_rpc_call_main_thread(
-        fp: *mut ::std::os::raw::c_void,
-        data: *mut u8_,
-        data_length: u32_,
     );
 }
 unsafe extern "C" {

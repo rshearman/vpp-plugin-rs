@@ -436,9 +436,9 @@ where
     ///
     /// - The caller must ensure that `to` has enough capacity to hold all the buffers
     ///   corresponding to the indices in `from_indices`.
-    /// - Each buffer's `feature_arc_index` and `current_config_index` must be consistent with
-    ///   the `FeatureData` type. If they are not known (i.e. because the caller the node isn't
-    ///   being executed in a feature arc), FeatureData should be a zero-sized type such as `()`.
+    /// - Each buffer's `current_config_index` must be consistent with the `FeatureData` type. If
+    ///   they are not known (i.e. because the caller the node isn't being executed in a feature
+    ///   arc), FeatureData should be a zero-sized type such as `()`.
     /// - Must not be called more than once without the framing being flushed in between as
     ///   Rust's reference aliasing rules will be violated.
     #[inline(always)]

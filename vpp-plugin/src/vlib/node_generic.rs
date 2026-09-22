@@ -191,19 +191,12 @@ where
             // Optimise for the common case where all four buffers sit at the same point of the
             // same feature config string (same arc and config index, i.e. typically the same rx
             // interface) and won't be dropped: one config lookup serves all four, and allows for
-            // use of vectorised store of nexts[i..i + 3]. Equal arc indices alone are not
-            // enough — buffers from interfaces with different feature sets share an arc but
-            // not a config string — and every buffer's config index must be advanced, or the
-            // next feature on the arc re-reads this node's entry.
+            // use of vectorised store of nexts[i..i + 3]. Buffers from interfaces with different
+            // feature sets don't share a config string — and every buffer's config index must be
+            // advanced, or the next feature on the arc re-reads this node's entry.
             let c0 = stride_b[0].current_config_index();
             if likely(
-                stride_b[0].vnet_buffer().feature_arc_index()
-                    == stride_b[1].vnet_buffer().feature_arc_index()
-                    && stride_b[0].vnet_buffer().feature_arc_index()
-                        == stride_b[2].vnet_buffer().feature_arc_index()
-                    && stride_b[0].vnet_buffer().feature_arc_index()
-                        == stride_b[3].vnet_buffer().feature_arc_index()
-                    && c0 == stride_b[1].current_config_index()
+                c0 == stride_b[1].current_config_index()
                     && c0 == stride_b[2].current_config_index()
                     && c0 == stride_b[3].current_config_index(),
             ) {

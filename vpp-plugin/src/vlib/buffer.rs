@@ -569,9 +569,9 @@ impl MainRef {
     ///   corresponding to the indices in `from_indices`.
     /// - Each index in `from_indices` must be valid and the caller must have ownership of the
     ///   buffer it corresponds to.
-    /// - Each buffer's `feature_arc_index` and `current_config_index` must be consistent with
-    ///   the `FeatureData` type. If they are not known (i.e. because the caller the node isn't
-    ///   being executed in a feature arc), FeatureData should be a zero-sized type such as `()`.
+    /// - Each buffer's `current_config_index` must be consistent with the `FeatureData` type. If
+    ///   they are not known (i.e. because the caller the node isn't being executed in a feature
+    ///   arc), FeatureData should be a zero-sized type such as `()`.
     /// - The capacity of `from_indices` must be a multiple of 8 (note though that the length is
     ///   allowed not to be). In other words, it must be valid to read multiples of 8 from the
     ///   underlying memory (possibly returning uninitialised or stale data) without faulting.
