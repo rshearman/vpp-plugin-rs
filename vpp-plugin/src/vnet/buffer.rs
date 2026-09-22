@@ -228,10 +228,7 @@ impl<FeatureData: Copy> crate::vlib::BufferRef<FeatureData> {
         unsafe {
             let cm = *feature_main.feature_config_mains.add(arc as usize);
 
-            vnet_get_config_data(
-                &cm.config_main,
-                &mut self.as_metadata_mut().__bindgen_anon_1.current_config_index,
-            )
+            vnet_get_config_data(&cm.config_main, self.current_config_index_mut())
         }
     }
 
@@ -246,9 +243,14 @@ impl<FeatureData: Copy> crate::vlib::BufferRef<FeatureData> {
         unsafe { self.as_metadata().__bindgen_anon_1.current_config_index }
     }
 
-    /// Sets the buffer's feature config index; see [`Self::current_config_index`].
+    /// Get a mutable reference to the current config index.
+    ///
+    /// See [`Self::current_config_index`].
     #[inline(always)]
-    pub fn set_current_config_index(&mut self, index: u32) {
-        self.as_metadata_mut().__bindgen_anon_1.current_config_index = index;
+    pub fn current_config_index_mut(&mut self) -> &mut u32 {
+        // SAFETY: reads through the reference are sound because it's from initialised metadata
+        // field of a valid buffer. Writes through the reference are sound because both members
+        // are u32 and so no value written to the reference can be invalid for the other member.
+        unsafe { &mut self.as_metadata_mut().__bindgen_anon_1.current_config_index }
     }
 }

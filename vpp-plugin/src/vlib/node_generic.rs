@@ -209,9 +209,9 @@ where
             ) {
                 let feature_next = stride_b[0].vnet_feature_next().0 as u16;
                 let advanced = stride_b[0].current_config_index();
-                stride_b[1].set_current_config_index(advanced);
-                stride_b[2].set_current_config_index(advanced);
-                stride_b[3].set_current_config_index(advanced);
+                *stride_b[1].current_config_index_mut() = advanced;
+                *stride_b[2].current_config_index_mut() = advanced;
+                *stride_b[3].current_config_index_mut() = advanced;
                 stride_nexts[0].write(feature_next);
                 stride_nexts[1].write(feature_next);
                 stride_nexts[2].write(feature_next);
