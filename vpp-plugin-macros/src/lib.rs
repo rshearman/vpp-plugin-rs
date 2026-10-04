@@ -487,6 +487,12 @@ pub fn derive_error_counters(input: TokenStream) -> TokenStream {
 }
 
 const CPU_MARCH_TO_CPU_AND_TARGET_FEATURE: &[(&str, Option<&str>, Option<&str>)] = &[
+    // VPP's baseline variant (`CLIB_MARCH_VARIANT_TYPE`, priority 0), built for the crate's
+    // target baseline on every architecture. VPP picks the highest-priority registered variant
+    // the running CPU supports, starting from -1; without this entry a CPU matching none of the
+    // variants below (any aarch64 core not listed, e.g. Apple silicon or Neoverse V1) leaves
+    // the node with a NULL function and the first dispatch jumps to address 0.
+    ("default", None, None),
     ("scalar", Some("x86_64"), None),
     ("hsw", Some("x86_64"), Some("avx2")),
     ("skx", Some("x86_64"), Some("avx512f")),
@@ -734,10 +740,14 @@ pub fn vlib_node(attributes: TokenStream, s: TokenStream) -> TokenStream {
             )
             .expect("Unable to create identifier");
             let march_variant_ident = syn::parse_str::<syn::Ident>(
-                format!(
-                    "clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_{}",
-                    cpu_march
-                )
+                if *cpu_march == "default" {
+                    "clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE".to_owned()
+                } else {
+                    format!(
+                        "clib_march_variant_type_t_CLIB_MARCH_VARIANT_TYPE_{}",
+                        cpu_march
+                    )
+                }
                 .as_ref(),
             )
             .expect("Unable to create identifier");

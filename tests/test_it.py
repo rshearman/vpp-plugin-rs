@@ -403,6 +403,34 @@ class IntegrationTestCase(VppTestCase):
         # Clean up
         self.enable_disable_api(self.pg0.sw_if_index, False, node_type="x4")
 
+    def node_variants(self, node_name):
+        """names of the function variants a node registered, from `show node`"""
+        reply = self.vapi.cli(f"show node {node_name}")
+        table = reply.split("node function variants:")[1].split("next nodes:")[0]
+        return [
+            line.split()[0]
+            for line in table.splitlines()
+            if line.strip() and line.split()[0] != "Name"
+        ]
+
+    def test_node_default_variant(self):
+        """Nodes register VPP's baseline function variant"""
+        # VPP picks the highest-priority variant the running CPU supports, starting from -1.
+        # A node without the baseline ("default", priority 0) gets a NULL function on any CPU
+        # matching none of its other variants, and the first dispatch jumps to address 0.
+        for node_name in ["test", "testx4"]:
+            self.assertIn("default", self.node_variants(node_name), node_name)
+
+        # Force the baseline and forward through it, so the function itself is exercised on
+        # whatever CPU runs the tests rather than only the one VPP would pick. It stays
+        # selected afterwards; the baseline is a valid choice on every CPU.
+        self.vapi.cli("set node function testx4 default")
+        self.enable_disable_api(self.pg0.sw_if_index, True, node_type="x4")
+        try:
+            self.send_and_expect(self.pg0, 7 * self.create_packet(2), self.pg1)
+        finally:
+            self.enable_disable_api(self.pg0.sw_if_index, False, node_type="x4")
+
     def test_process_node(self):
         """Use a process node"""
         self.process_node(self.pg1.remote_ip4)
