@@ -401,6 +401,126 @@ vnet_feature_init! {
     node: TestX4Node,
 }
 
+/// Interfaces `testchain` is enabled on, as a bitmap of sw_if_index (tests use fewer than 64).
+static TEST_CHAIN_ENABLED: AtomicU64 = AtomicU64::new(0);
+
+#[derive(ErrorCounters)]
+enum TestChainCounter {
+    #[error_counter(description = "From interfaces the feature is enabled on", severity = INFO)]
+    Enabled,
+    #[error_counter(description = "From interfaces the feature is not enabled on", severity = ERROR)]
+    Foreign,
+}
+
+static TEST_CHAIN_NODE: TestChainNode = TestChainNode::new();
+
+/// A feature that runs after `testx4` and only counts, by whether the packet's rx interface has
+/// it enabled. Packets reaching it from an interface without it were misrouted by an earlier
+/// feature; a packet counted twice was routed back to it.
+#[vlib_node(name = "testchain", instance = TEST_CHAIN_NODE)]
+struct TestChainNode;
+
+impl TestChainNode {
+    const fn new() -> Self {
+        Self
+    }
+}
+
+impl vlib::node::Node for TestChainNode {
+    type Vector = BufferIndex;
+    type Scalar = ();
+    type Aux = ();
+
+    type NextNodes = TestNextNode;
+    type RuntimeData = ();
+    type TraceData = ();
+    type Errors = TestChainCounter;
+    type FeatureData = ();
+
+    #[inline(always)]
+    unsafe fn function(
+        &self,
+        vm: &mut vlib::MainRef,
+        node: &mut vlib::NodeRuntimeRef<Self>,
+        frame: &mut vlib::FrameRef<Self>,
+    ) -> u16 {
+        unsafe {
+            struct Impl;
+
+            impl GenericFeatureNodeX1<TestChainNode> for Impl {
+                #[inline(always)]
+                unsafe fn map_buffer_to_next(
+                    &self,
+                    vm: &vlib::MainRef,
+                    node: &mut vlib::NodeRuntimeRef<TestChainNode>,
+                    b0: &mut vlib::BufferRef<()>,
+                ) -> FeatureNextNode<TestNextNode> {
+                    let sw_if_index = u32::from(b0.vnet_buffer().rx_sw_if_index());
+                    let enabled = sw_if_index < 64
+                        && TEST_CHAIN_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+                            & (1 << sw_if_index)
+                            != 0;
+                    let counter = if enabled {
+                        TestChainCounter::Enabled
+                    } else {
+                        TestChainCounter::Foreign
+                    };
+                    node.increment_error_counter(vm, counter, 1);
+                    FeatureNextNode::NextFeature
+                }
+            }
+
+            generic_feature_node_x1(vm, node, frame, Impl)
+        }
+    }
+}
+
+vnet_feature_init! {
+    identifier: TESTCHAIN_FEAT,
+    arc_name: "ip4-unicast",
+    node: TestChainNode,
+    runs_after: ["testx4"],
+}
+
+#[vlib_cli_command(
+    path = "rust-test chain",
+    short_help = "rust-test chain <interface-name> [disable]"
+)]
+fn chain_enable_disable_command(
+    vm: &mut vlib::BarrierHeldMainRef,
+    input: &str,
+) -> Result<(), ErrorStack> {
+    let args: Vec<_> = input.split_whitespace().collect();
+    let name = args
+        .first()
+        .ok_or_else(|| ErrorStack::msg("Missing interface name"))?;
+    let sw_if_index = SwIfIndex::from_str(name)
+        .map_err(|_| ErrorStack::msg(format!("Invalid interface name {name}")))?;
+    let bit = 1u64
+        .checked_shl(u32::from(sw_if_index))
+        .filter(|_| u32::from(sw_if_index) < 64)
+        .ok_or_else(|| ErrorStack::msg("sw_if_index too large for the test bitmap"))?;
+    let enable = match args.get(1) {
+        None => true,
+        Some(&"disable") => false,
+        Some(other) => return Err(ErrorStack::msg(format!("Unrecognised option {other}"))),
+    };
+
+    if enable {
+        TEST_CHAIN_ENABLED.fetch_or(bit, std::sync::atomic::Ordering::Relaxed);
+        TESTCHAIN_FEAT
+            .enable(vm, sw_if_index, ())
+            .map_err(|e| e.context("Failed to enable chain feature"))?;
+    } else {
+        TESTCHAIN_FEAT
+            .disable(vm, sw_if_index)
+            .map_err(|e| e.context("Failed to disable chain feature"))?;
+        TEST_CHAIN_ENABLED.fetch_and(!bit, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    Ok(())
+}
+
 #[vlib_cli_command(
     path = "rust-test node",
     short_help = "rust-test node <interface-name> [disable]"

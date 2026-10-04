@@ -234,4 +234,21 @@ impl<FeatureData: Copy> crate::vlib::BufferRef<FeatureData> {
             )
         }
     }
+
+    /// The buffer's feature config index: its position in its arc's feature config string.
+    ///
+    /// Two buffers with equal indices on the same arc are at the same point of the same config
+    /// string, so [`Self::vnet_feature_next`] yields the same next node and the same advanced
+    /// index for both.
+    #[inline(always)]
+    pub fn current_config_index(&self) -> u32 {
+        // SAFETY: plain u32 read of an initialised metadata field of a valid buffer
+        unsafe { self.as_metadata().__bindgen_anon_1.current_config_index }
+    }
+
+    /// Sets the buffer's feature config index; see [`Self::current_config_index`].
+    #[inline(always)]
+    pub fn set_current_config_index(&mut self, index: u32) {
+        self.as_metadata_mut().__bindgen_anon_1.current_config_index = index;
+    }
 }
