@@ -1,0 +1,11 @@
+[package]
+name = "vpp-test-version-mismatch-plugin"
+version = "0.2.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vpp-plugin = { path = "../vpp-plugin" }

@@ -25,14 +25,42 @@ fn build_wrapper() {
     cc.compile("libvlib_wrapper.a");
 }
 
+/// `VPP_BUILD_VER` from the VPP headers being compiled against (`vpp/app/version.h`), read
+/// through the C preprocessor so the compiler's own include path decides which VPP it is.
+fn vpp_build_ver() -> String {
+    let probe = PathBuf::from(env::var("OUT_DIR").unwrap()).join("vpp_build_ver_probe.c");
+    std::fs::write(
+        &probe,
+        "#include <vpp/app/version.h>\nvpp_plugin_build_ver VPP_BUILD_VER\n",
+    )
+    .expect("write VPP_BUILD_VER probe");
+    let expanded = cc::Build::new()
+        .file(&probe)
+        .cargo_metadata(false)
+        .try_expand()
+        .expect("preprocess vpp/app/version.h");
+    String::from_utf8_lossy(&expanded)
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("vpp_plugin_build_ver"))
+        .map(|v| v.trim().trim_matches('"').to_owned())
+        .expect("VPP_BUILD_VER not defined by vpp/app/version.h")
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=vlib_wrapper.h");
     println!("cargo:rustc-check-cfg=cfg(pregenerated_bindings)");
 
     if !headers_available() {
         println!("cargo:rustc-cfg=pregenerated_bindings");
+        // No VPP to pin to; an empty `version_required` is no requirement to VPP's loader.
+        println!("cargo:rustc-env=VPP_PLUGIN_VPP_BUILD_VER=");
         return;
     }
+
+    println!(
+        "cargo:rustc-env=VPP_PLUGIN_VPP_BUILD_VER={}",
+        vpp_build_ver()
+    );
 
     build_wrapper();
 

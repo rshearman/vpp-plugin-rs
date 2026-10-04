@@ -28,6 +28,16 @@
 pub mod bindings;
 #[doc(hidden)]
 pub mod macro_support;
+
+/// `VPP_BUILD_VER` of the VPP whose headers this crate was built against.
+///
+/// Intended for `vlib_plugin_register!`'s `version_required`. VPP's loader compares by prefix: it
+/// refuses the plugin unless its own build version *starts with* this string, so a build whose
+/// version merely extends it (e.g. `26.06-release-octeon9` for a plugin built against
+/// `26.06-release`) still loads it. A plugin that needs the exact build can also compare this
+/// with the running VPP's `vlib_plugin_app_version` at init. Empty when the crate was built from
+/// the pre-generated bindings (no VPP headers available), which VPP treats as no requirement.
+pub const VPP_BUILD_VER: &str = env!("VPP_PLUGIN_VPP_BUILD_VER");
 pub mod vlib;
 pub mod vlibapi;
 pub mod vnet;
