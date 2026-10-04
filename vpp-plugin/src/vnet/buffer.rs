@@ -4,6 +4,8 @@
 
 use bitflags::bitflags;
 
+#[cfg(not(vpp_shared_feature_config_heap))]
+use crate::bindings::vnet_config_main_t;
 use crate::{
     bindings::{
         VNET_BUFFER_F_AVAIL1, VNET_BUFFER_F_AVAIL2, VNET_BUFFER_F_AVAIL3, VNET_BUFFER_F_AVAIL4,
@@ -16,7 +18,6 @@ use crate::{
         VNET_BUFFER_F_LOOP_COUNTER_VALID, VNET_BUFFER_F_OFFLOAD, VNET_BUFFER_F_QOS_DATA_VALID,
         VNET_BUFFER_F_SPAN_CLONE, VNET_BUFFER_F_VLAN_1_DEEP, VNET_BUFFER_F_VLAN_2_DEEP,
         feature_main, vlib_rx_or_tx_t_VLIB_RX, vlib_rx_or_tx_t_VLIB_TX, vnet_buffer_opaque_t,
-        vnet_config_main_t,
     },
     vnet::types::SwIfIndex,
 };
@@ -112,6 +113,10 @@ impl BufferRef {
     }
 
     /// Returns the index of the feature arc that the buffer is being processed from
+    ///
+    /// Absent on VPP builds with a shared feature config heap (26.06+), which no longer record
+    /// the arc per buffer.
+    #[cfg(not(vpp_shared_feature_config_heap))]
     #[inline(always)]
     pub fn feature_arc_index(&self) -> u8 {
         // SAFETY: since the reference to self is valid, so must be the pointer
@@ -185,9 +190,28 @@ impl<FeatureData> crate::vlib::BufferRef<FeatureData> {
 ///   contain valid data of that type, followed by a valid `u32` next-index value.
 /// - `FeatureData` must exactly match the type that was stored at this config index during
 ///   configuration creation, including any alignment and representation requirements.
+#[cfg(not(vpp_shared_feature_config_heap))]
 #[inline(always)]
 unsafe fn vnet_get_config_data<FeatureData: Copy>(
     cm: *const vnet_config_main_t,
+    config_index: &mut u32,
+) -> (u32, FeatureData) {
+    // SAFETY: forwarded verbatim; `cm`'s heap satisfies `config_data_at`'s preconditions per
+    // this function's.
+    unsafe { config_data_at((*cm).config_string_heap, config_index) }
+}
+
+/// Returns config data at `*config_index` in a raw config string heap, advancing the index.
+///
+/// The shared-heap form of [`vnet_get_config_data`]: `vnet_get_config_shared_data` in VPP's
+/// `vnet/config.h`.
+///
+/// # Safety
+///
+/// Same as [`vnet_get_config_data`], with `heap` in place of `(*cm).config_string_heap`.
+#[inline(always)]
+unsafe fn config_data_at<FeatureData: Copy>(
+    heap: *const u32,
     config_index: &mut u32,
 ) -> (u32, FeatureData) {
     // SAFETY: function preconditions mean that this pointer arithmetic is valid and matches what
@@ -195,7 +219,7 @@ unsafe fn vnet_get_config_data<FeatureData: Copy>(
     unsafe {
         let index = *config_index;
 
-        let d = (*cm).config_string_heap.add(index as usize);
+        let d = heap.add(index as usize);
 
         let n = std::mem::size_of::<FeatureData>().div_ceil(std::mem::size_of_val(&*d));
 
@@ -217,6 +241,28 @@ impl<FeatureData: Copy> crate::vlib::BufferRef<FeatureData> {
     /// # Safety
     ///
     /// Must only be used from nodes when invoked from a feature arc.
+    #[cfg(vpp_shared_feature_config_heap)]
+    #[inline(always)]
+    pub unsafe fn vnet_feature_next(&mut self) -> (u32, FeatureData) {
+        // SAFETY: method precondition means `current_config_index` is a valid index into the
+        // shared feature config heap. VPP only rebuilds that heap with the worker barrier held,
+        // so no worker can observe it mid-update.
+        unsafe {
+            config_data_at(
+                feature_main.shared_feature_config_heap,
+                &mut self.as_metadata_mut().__bindgen_anon_1.current_config_index,
+            )
+        }
+    }
+
+    /// Get the next feature node and feature data for this buffer
+    ///
+    /// Used when continuing to the next feature node in a node invoked from a feature arc.
+    ///
+    /// # Safety
+    ///
+    /// Must only be used from nodes when invoked from a feature arc.
+    #[cfg(not(vpp_shared_feature_config_heap))]
     #[inline(always)]
     pub unsafe fn vnet_feature_next(&mut self) -> (u32, FeatureData) {
         let arc = self.vnet_buffer().feature_arc_index();
@@ -235,10 +281,11 @@ impl<FeatureData: Copy> crate::vlib::BufferRef<FeatureData> {
         }
     }
 
-    /// The buffer's feature config index: its position in its arc's feature config string.
+    /// The buffer's feature config index: its position in its arc's feature config string (in
+    /// the heap shared by every arc, from VPP 26.06).
     ///
-    /// Two buffers with equal indices on the same arc are at the same point of the same config
-    /// string, so [`Self::vnet_feature_next`] yields the same next node and the same advanced
+    /// Two buffers with equal indices (and, before 26.06, on the same arc) are at the same point
+    /// of the same config string, so [`Self::vnet_feature_next`] yields the same next node and the same advanced
     /// index for both.
     #[inline(always)]
     pub fn current_config_index(&self) -> u32 {

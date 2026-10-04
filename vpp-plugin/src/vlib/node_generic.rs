@@ -196,13 +196,19 @@ where
             // not a config string — and every buffer's config index must be advanced, or the
             // next feature on the arc re-reads this node's entry.
             let c0 = stride_b[0].current_config_index();
+            // From VPP 26.06 every arc's config strings share one heap, so the index alone
+            // identifies the point in the string.
+            #[cfg(not(vpp_shared_feature_config_heap))]
+            let same_arc = stride_b[0].vnet_buffer().feature_arc_index()
+                == stride_b[1].vnet_buffer().feature_arc_index()
+                && stride_b[0].vnet_buffer().feature_arc_index()
+                    == stride_b[2].vnet_buffer().feature_arc_index()
+                && stride_b[0].vnet_buffer().feature_arc_index()
+                    == stride_b[3].vnet_buffer().feature_arc_index();
+            #[cfg(vpp_shared_feature_config_heap)]
+            let same_arc = true;
             if likely(
-                stride_b[0].vnet_buffer().feature_arc_index()
-                    == stride_b[1].vnet_buffer().feature_arc_index()
-                    && stride_b[0].vnet_buffer().feature_arc_index()
-                        == stride_b[2].vnet_buffer().feature_arc_index()
-                    && stride_b[0].vnet_buffer().feature_arc_index()
-                        == stride_b[3].vnet_buffer().feature_arc_index()
+                same_arc
                     && c0 == stride_b[1].current_config_index()
                     && c0 == stride_b[2].current_config_index()
                     && c0 == stride_b[3].current_config_index(),

@@ -46,9 +46,31 @@ fn vpp_build_ver() -> String {
         .expect("VPP_BUILD_VER not defined by vpp/app/version.h")
 }
 
+/// VPP 26.06 moved feature-arc config strings into one heap shared by every
+/// arc (`feature_main.shared_feature_config_heap`) and dropped
+/// `vnet_buffer_opaque_t::feature_arc_index`; `vnet_feature_next` now walks
+/// that heap by `current_config_index` alone. Probe for the field rather
+/// than parse a version string so any build of either shape is handled.
+fn has_shared_feature_config_heap() -> bool {
+    let probe = PathBuf::from(env::var("OUT_DIR").unwrap()).join("shared_heap_probe.c");
+    std::fs::write(
+        &probe,
+        "#include <vnet/vnet.h>\n#include <vnet/feature/feature.h>\n\
+         u32 *pf_probe (void) { return feature_main.shared_feature_config_heap; }\n",
+    )
+    .expect("write shared-heap probe");
+    cc::Build::new()
+        .file(&probe)
+        .cargo_warnings(false)
+        .cargo_metadata(false)
+        .try_compile("shared_heap_probe")
+        .is_ok()
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=vlib_wrapper.h");
     println!("cargo:rustc-check-cfg=cfg(pregenerated_bindings)");
+    println!("cargo:rustc-check-cfg=cfg(vpp_shared_feature_config_heap)");
 
     if !headers_available() {
         println!("cargo:rustc-cfg=pregenerated_bindings");
@@ -61,6 +83,10 @@ fn main() {
         "cargo:rustc-env=VPP_PLUGIN_VPP_BUILD_VER={}",
         vpp_build_ver()
     );
+
+    if has_shared_feature_config_heap() {
+        println!("cargo:rustc-cfg=vpp_shared_feature_config_heap");
+    }
 
     build_wrapper();
 
