@@ -1197,4 +1197,5 @@ fn test_init(vm: &mut vlib::BarrierHeldMainRef) -> Result<(), ErrorStack> {
 vlib_plugin_register! {
     version: "1.0",
     description: "Test",
+    version_required: vpp_plugin::VPP_BUILD_VER,
 }

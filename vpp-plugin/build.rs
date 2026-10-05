@@ -25,14 +25,64 @@ fn build_wrapper() {
     cc.compile("libvlib_wrapper.a");
 }
 
+/// `VPP_BUILD_VER` from the VPP headers being compiled against (`vpp/app/version.h`), read
+/// through the C preprocessor so the compiler's own include path decides which VPP it is.
+fn vpp_build_ver() -> String {
+    let probe = PathBuf::from(env::var("OUT_DIR").unwrap()).join("vpp_build_ver_probe.c");
+    std::fs::write(
+        &probe,
+        "#include <vpp/app/version.h>\nvpp_plugin_build_ver VPP_BUILD_VER\n",
+    )
+    .expect("write VPP_BUILD_VER probe");
+    let expanded = cc::Build::new()
+        .file(&probe)
+        .cargo_metadata(false)
+        .try_expand()
+        .expect("preprocess vpp/app/version.h");
+    build_ver_from_expansion(&String::from_utf8_lossy(&expanded))
+        .expect("VPP_BUILD_VER not defined by vpp/app/version.h")
+}
+
+/// The string literal the probe's `vpp_plugin_build_ver VPP_BUILD_VER` line
+/// expanded to. The marker and the string need not share a line: GCC puts a
+/// line marker between them when the macro comes from a system header, as
+/// it does for a VPP installed under /usr/include:
+///
+/// ```text
+/// vpp_plugin_build_ver
+/// # 2 "vpp_build_ver_probe.c" 3 4
+///                     "26.06-release-octeon9"
+/// ```
+///
+/// so take the first string literal after the marker, skipping line
+/// markers. `None` when there is none (the macro is not defined).
+fn build_ver_from_expansion(expanded: &str) -> Option<String> {
+    let (_, after) = expanded.split_once("vpp_plugin_build_ver")?;
+    let rest: Vec<&str> = after
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
+    let rest = rest.join(" ");
+    let start = rest.find('"')? + 1;
+    let len = rest[start..].find('"')?;
+    Some(rest[start..start + len].to_owned())
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=vlib_wrapper.h");
     println!("cargo:rustc-check-cfg=cfg(pregenerated_bindings)");
 
     if !headers_available() {
         println!("cargo:rustc-cfg=pregenerated_bindings");
+        // No VPP to pin to; an empty `version_required` is no requirement to VPP's loader.
+        println!("cargo:rustc-env=VPP_PLUGIN_VPP_BUILD_VER=");
         return;
     }
+
+    println!(
+        "cargo:rustc-env=VPP_PLUGIN_VPP_BUILD_VER={}",
+        vpp_build_ver()
+    );
 
     build_wrapper();
 
