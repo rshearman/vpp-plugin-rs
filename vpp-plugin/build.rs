@@ -39,11 +39,33 @@ fn vpp_build_ver() -> String {
         .cargo_metadata(false)
         .try_expand()
         .expect("preprocess vpp/app/version.h");
-    String::from_utf8_lossy(&expanded)
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("vpp_plugin_build_ver"))
-        .map(|v| v.trim().trim_matches('"').to_owned())
+    build_ver_from_expansion(&String::from_utf8_lossy(&expanded))
         .expect("VPP_BUILD_VER not defined by vpp/app/version.h")
+}
+
+/// The string literal the probe's `vpp_plugin_build_ver VPP_BUILD_VER` line
+/// expanded to. The marker and the string need not share a line: GCC puts a
+/// line marker between them when the macro comes from a system header, as
+/// it does for a VPP installed under /usr/include:
+///
+/// ```text
+/// vpp_plugin_build_ver
+/// # 2 "vpp_build_ver_probe.c" 3 4
+///                     "26.06-release-octeon9"
+/// ```
+///
+/// so take the first string literal after the marker, skipping line
+/// markers. `None` when there is none (the macro is not defined).
+fn build_ver_from_expansion(expanded: &str) -> Option<String> {
+    let (_, after) = expanded.split_once("vpp_plugin_build_ver")?;
+    let rest: Vec<&str> = after
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
+    let rest = rest.join(" ");
+    let start = rest.find('"')? + 1;
+    let len = rest[start..].find('"')?;
+    Some(rest[start..start + len].to_owned())
 }
 
 fn main() {
