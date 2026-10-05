@@ -5,7 +5,6 @@ on: [push, pull_request]
 env:
   rust_stable: stable
   rust_clippy: '1.95.0'
-  vpp: '26.02'
   CCACHE_DIR: ${{ github.workspace }}/.ccache
 
 jobs:
@@ -48,14 +47,19 @@ jobs:
           RUSTDOCFLAGS: -Dwarnings
 
   tests:
-    name: Run tests (${{ matrix.runner }})
+    name: Run tests (${{ matrix.runner }}, VPP ${{ matrix.vpp }})
     runs-on: ${{ matrix.runner }}
     strategy:
       # It's useful to know all of the failures up front in case they are different between the
       # variants
       fail-fast: false
       matrix:
-        runner: ['ubuntu-24.04', 'ubuntu-24.04-arm']
+        include:
+          - { runner: 'ubuntu-24.04', vpp: '26.02' }
+          - { runner: 'ubuntu-24.04-arm', vpp: '26.02' }
+          # 26.06 renamed its x86_64 march variants (scalar, x86_64_v3, x86_64_v4), which the
+          # node macro does not register yet, so 26.06 is tested on aarch64 only.
+          - { runner: 'ubuntu-24.04-arm', vpp: '26.06' }
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust ${{ env.rust_stable }}
@@ -66,14 +70,14 @@ jobs:
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: vpp-${{ env.vpp }}-${{ matrix.runner }}
-      - name: Install vpp ${{ env.vpp }}
+          key: vpp-${{ matrix.vpp }}-${{ matrix.runner }}
+      - name: Install vpp ${{ matrix.vpp }}
         run: |
           export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
           srcdir="$(pwd)"
           mkdir /tmp/build
           cd /tmp/build
-          git clone --depth 1 -b v${{ env.vpp }} https://gerrit.fd.io/r/vpp
+          git clone --depth 1 -b v${{ matrix.vpp }} https://gerrit.fd.io/r/vpp
           cd vpp
           make install-dep
           make pkg-deb

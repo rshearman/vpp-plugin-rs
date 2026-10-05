@@ -464,6 +464,17 @@ class IntegrationTestCase(VppTestCase):
         self.assertEqual(
             self.statistics.get_err_counter("/err/testchain/Foreign") - foreign, 0
         )
+    def test_version_required(self):
+        """Plugins requiring another VPP build are refused"""
+        plugins = self.vapi.cli("show plugins")
+        # test_plugin.so requires the build it was compiled against (vpp_plugin::VPP_BUILD_VER),
+        # i.e. this one, so it loaded.
+        self.assertIn("test_plugin.so", plugins)
+        # version_mismatch_plugin.so requires a build that does not exist, so VPP refused it:
+        # neither the plugin nor its CLI command is present.
+        self.assertNotIn("version_mismatch_plugin.so", plugins)
+        with self.assertRaises(CliFailedCommandError):
+            self.vapi.cli("rust-test version-mismatch")
 
     def test_process_node(self):
         """Use a process node"""

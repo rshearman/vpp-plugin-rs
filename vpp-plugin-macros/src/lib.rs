@@ -18,11 +18,12 @@ use syn::spanned::Spanned;
 struct PluginRegister {
     version: Option<String>,
     description: Option<String>,
+    version_required: Option<syn::Expr>,
 }
 
 impl syn::parse::Parse for PluginRegister {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        const EXPECTED_KEYS: &[&str] = &["version", "description"];
+        const EXPECTED_KEYS: &[&str] = &["version", "description", "version_required"];
 
         let mut info = PluginRegister::default();
         let mut seen_keys = HashSet::new();
@@ -45,6 +46,11 @@ impl syn::parse::Parse for PluginRegister {
                 "description" => {
                     info.description =
                         Some(<syn::LitStr as syn::parse::Parse>::parse(input)?.value())
+                }
+                // An expression rather than a literal: the useful value is the VPP build being
+                // compiled against (`vpp_plugin::VPP_BUILD_VER`), known only at build time.
+                "version_required" => {
+                    info.version_required = Some(<syn::Expr as syn::parse::Parse>::parse(input)?)
                 }
                 _ => {
                     return Err(syn::Error::new(
@@ -70,6 +76,10 @@ impl syn::parse::Parse for PluginRegister {
 ///
 /// - `version`: (required, string literal) The version string of the plugin. Must be at most 63 characters.
 /// - `description`: (optional, string literal) A description of the plugin.
+/// - `version_required`: (optional, `&'static str` constant expression) VPP refuses to load the
+///   plugin unless its own build version starts with this string (a prefix match, not
+///   equality); typically `vpp_plugin::VPP_BUILD_VER`, the build it was compiled against. At
+///   most 63 characters, checked at compile time.
 ///
 /// # Examples
 ///
@@ -85,7 +95,10 @@ pub fn vlib_plugin_register(ts: TokenStream) -> TokenStream {
     let PluginRegister {
         version,
         description,
+        version_required,
     } = syn::parse_macro_input!(ts as PluginRegister);
+    let version_required = version_required
+        .map(|e| quote!(version_required: ::vpp_plugin::macro_support::c_char_array::<64>(#e),));
 
     let mut version_elems = version
         .expect("Missing required attribute \"version\"")
@@ -111,6 +124,7 @@ pub fn vlib_plugin_register(ts: TokenStream) -> TokenStream {
         pub static mut vlib_plugin_registration: ::vpp_plugin::bindings::vlib_plugin_registration_t = ::vpp_plugin::bindings::vlib_plugin_registration_t {
             version: [#(#version_elems as ::std::os::raw::c_char),*],
             description: #description,
+            #version_required
             ..::vpp_plugin::bindings::vlib_plugin_registration_t::new()
         };
     );

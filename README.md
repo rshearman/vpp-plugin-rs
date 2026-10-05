@@ -22,7 +22,9 @@ See vpp-example-plugin for how to build a plugin, including the `Cargo.toml` con
 
 At the moment, interface and crypto engine plugins are not supported, only plugins for nodes.
 
-Only VPP 26.02 is currently supported. Later versions may work, but small changes may be required.
+VPP 26.02 is supported, and VPP 26.06 on aarch64. On x86_64, 26.06 renamed the node function
+march variants (to `scalar`, `x86_64_v3` and `x86_64_v4`), which the node macro does not register
+yet. Later versions may work, but small changes may be required.
 
 ## Longer term goals
 
