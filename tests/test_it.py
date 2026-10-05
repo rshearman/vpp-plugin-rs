@@ -403,6 +403,68 @@ class IntegrationTestCase(VppTestCase):
         # Clean up
         self.enable_disable_api(self.pg0.sw_if_index, False, node_type="x4")
 
+    def test_node_x4_mixed_feature_chains(self):
+        """Node processing 4 buffers at a time, buffers with different feature chains"""
+        # testx4 is enabled on both interfaces but testchain, which runs after it, only on
+        # pg0, so one ip4-unicast frame holding packets from both reaches testx4 with two
+        # different config strings. Every packet must reach testchain only if it came from
+        # pg0, at most once, and leave by its own route, however the frame splits into strides
+        # of four; testx4 dropping some (UDP dport 1) mixes next nodes within a stride too.
+        self.enable_disable_api(self.pg0.sw_if_index, True, node_type="x4")
+        self.enable_disable_api(self.pg1.sw_if_index, True, node_type="x4")
+        self.cli_verify_no_response(f"rust-test chain {self.pg0.name}")
+        try:
+            for n0, n1 in [
+                (1, 1), (1, 3), (2, 2), (3, 1), (3, 5), (4, 4),
+                (5, 7), (6, 2), (9, 13), (100, 155),
+            ]:
+                for drop_every in (0, 3):
+                    with self.subTest(n0=n0, n1=n1, drop_every=drop_every):
+                        self.check_mixed_feature_chains(n0, n1, drop_every)
+        finally:
+            self.cli_verify_no_response(f"rust-test chain {self.pg0.name} disable")
+            self.enable_disable_api(self.pg1.sw_if_index, False, node_type="x4")
+            self.enable_disable_api(self.pg0.sw_if_index, False, node_type="x4")
+
+    def check_mixed_feature_chains(self, n0, n1, drop_every):
+        enabled = self.statistics.get_err_counter("/err/testchain/Enabled")
+        foreign = self.statistics.get_err_counter("/err/testchain/Foreign")
+
+        def dport(i):
+            return 1 if drop_every and i % drop_every == 0 else 2
+
+        from_pg0 = [self.create_packet(dport(i), sport=1000 + i) for i in range(n0)]
+        from_pg1 = [
+            Ether(src=self.pg1.remote_mac, dst=self.pg1.local_mac)
+            / IP(src=self.pg1.remote_ip4, dst=self.pg0.remote_ip4, ttl=255)
+            / UDP(dport=2, sport=2000 + i)
+            for i in range(n1)
+        ]
+        forwarded_from_pg0 = [1000 + i for i in range(n0) if dport(i) == 2]
+
+        self.pg0.add_stream(from_pg0)
+        self.pg1.add_stream(from_pg1)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
+        # Exact counts and identities: nothing dropped, duplicated or sent the wrong way.
+        if forwarded_from_pg0:
+            out_pg1 = self.pg1.get_capture(len(forwarded_from_pg0))
+            self.assertEqual(sorted(p[UDP].sport for p in out_pg1), forwarded_from_pg0)
+        else:
+            self.pg1.assert_nothing_captured()
+        out_pg0 = self.pg0.get_capture(n1)
+        self.assertEqual(sorted(p[UDP].sport for p in out_pg0), list(range(2000, 2000 + n1)))
+
+        # testchain saw each forwarded pg0 packet exactly once and nothing from pg1.
+        self.assertEqual(
+            self.statistics.get_err_counter("/err/testchain/Enabled") - enabled,
+            len(forwarded_from_pg0),
+        )
+        self.assertEqual(
+            self.statistics.get_err_counter("/err/testchain/Foreign") - foreign, 0
+        )
+
     def test_process_node(self):
         """Use a process node"""
         self.process_node(self.pg1.remote_ip4)
