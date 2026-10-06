@@ -16,7 +16,6 @@ use crate::{
         VNET_BUFFER_F_LOOP_COUNTER_VALID, VNET_BUFFER_F_OFFLOAD, VNET_BUFFER_F_QOS_DATA_VALID,
         VNET_BUFFER_F_SPAN_CLONE, VNET_BUFFER_F_VLAN_1_DEEP, VNET_BUFFER_F_VLAN_2_DEEP,
         feature_main, vlib_rx_or_tx_t_VLIB_RX, vlib_rx_or_tx_t_VLIB_TX, vnet_buffer_opaque_t,
-        vnet_config_main_t,
     },
     vnet::types::SwIfIndex,
 };
@@ -111,13 +110,6 @@ impl BufferRef {
         self as *const _ as *mut _
     }
 
-    /// Returns the index of the feature arc that the buffer is being processed from
-    #[inline(always)]
-    pub fn feature_arc_index(&self) -> u8 {
-        // SAFETY: since the reference to self is valid, so must be the pointer
-        unsafe { (*self.as_ptr()).feature_arc_index }
-    }
-
     /// Returns the index of the receive software interface
     pub fn rx_sw_if_index(&self) -> SwIfIndex {
         // SAFETY: since the reference to self is valid, so must be the pointer
@@ -176,8 +168,7 @@ impl<FeatureData> crate::vlib::BufferRef<FeatureData> {
 ///
 /// # Safety
 ///
-/// - `cm` must be a valid pointer to a `vnet_config_main_t` structure.
-/// - `(*cm).config_string_heap` must be a valid pointer to a contiguous heap of `u32` values.
+/// - `config_string_heap` must be a valid pointer to a contiguous heap of `u32` values.
 /// - `*config_index` must be a valid index into the heap: `index + (size_of::<FeatureData>() /
 ///   size_of::<u32>()) + 1 <= heap_length` must be satisfied, where `heap_length` is the
 ///   number of `u32` elements in the heap. Additionally, the memory at
@@ -187,7 +178,7 @@ impl<FeatureData> crate::vlib::BufferRef<FeatureData> {
 ///   configuration creation, including any alignment and representation requirements.
 #[inline(always)]
 unsafe fn vnet_get_config_data<FeatureData: Copy>(
-    cm: *const vnet_config_main_t,
+    config_string_heap: *const u32,
     config_index: &mut u32,
 ) -> (u32, FeatureData) {
     // SAFETY: function preconditions mean that this pointer arithmetic is valid and matches what
@@ -195,7 +186,7 @@ unsafe fn vnet_get_config_data<FeatureData: Copy>(
     unsafe {
         let index = *config_index;
 
-        let d = (*cm).config_string_heap.add(index as usize);
+        let d = config_string_heap.add(index as usize);
 
         let n = std::mem::size_of::<FeatureData>().div_ceil(std::mem::size_of_val(&*d));
 
@@ -219,18 +210,14 @@ impl<FeatureData: Copy> crate::vlib::BufferRef<FeatureData> {
     /// Must only be used from nodes when invoked from a feature arc.
     #[inline(always)]
     pub unsafe fn vnet_feature_next(&mut self) -> (u32, FeatureData) {
-        let arc = self.vnet_buffer().feature_arc_index();
-        // SAFETY: method precondition means that arc is a valid index into
-        // `feature_main.feature_config_mains`, and then also that the `current_config_index`
-        // buffer field is a valid config index for that feature arc.
-        // Access to `feature_main.feature_config_mains` is safe without locking because VPP only
+        // SAFETY: method precondition means that `current_config_index` is a valid index into
+        // `feature_main.shared_feature_config_heap`.
+        // Access to `feature_main.shared_feature_config_heap` is safe without locking because VPP only
         // modifies this during init, before any buffers are allocated.
         unsafe {
-            let cm = *feature_main.feature_config_mains.add(arc as usize);
-
             vnet_get_config_data(
-                &cm.config_main,
-                &mut self.as_metadata_mut().__bindgen_anon_1.current_config_index,
+                feature_main.shared_feature_config_heap,
+                self.current_config_index_mut(),
             )
         }
     }
@@ -246,9 +233,14 @@ impl<FeatureData: Copy> crate::vlib::BufferRef<FeatureData> {
         unsafe { self.as_metadata().__bindgen_anon_1.current_config_index }
     }
 
-    /// Sets the buffer's feature config index; see [`Self::current_config_index`].
+    /// Get a mutable reference to the current config index.
+    ///
+    /// See [`Self::current_config_index`].
     #[inline(always)]
-    pub fn set_current_config_index(&mut self, index: u32) {
-        self.as_metadata_mut().__bindgen_anon_1.current_config_index = index;
+    pub fn current_config_index_mut(&mut self) -> &mut u32 {
+        // SAFETY: reads through the reference are sound because it's from initialised metadata
+        // field of a valid buffer. Writes through the reference are sound because both members
+        // are u32 and so no value written to the reference can be invalid for the other member.
+        unsafe { &mut self.as_metadata_mut().__bindgen_anon_1.current_config_index }
     }
 }
