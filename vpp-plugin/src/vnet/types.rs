@@ -1,6 +1,6 @@
 //! VPP networking types
 
-use std::{ffi::CStr, fmt, str::FromStr};
+use std::{fmt, str::FromStr};
 
 use crate::{
     bindings::{
@@ -40,17 +40,16 @@ impl fmt::Debug for ip6_header_t {
 
 impl fmt::Display for ip6_header_t {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // SAFETY: vlib_helper_format_ip4_header returns a valid Vec representing a C string (on
-        // allocation failure it aborts)
-        unsafe {
-            let s = vppinfra::vec::Vec::from_raw(vlib_helper_format_ip6_header(
+        // SAFETY: vlib_helper_format_ip6_header returns a valid Vec of (not NUL-terminated)
+        // string bytes (on allocation failure it aborts)
+        let s = unsafe {
+            vppinfra::vec::Vec::from_raw(vlib_helper_format_ip6_header(
                 std::ptr::null_mut(),
                 self,
                 std::mem::size_of::<Self>(),
-            ));
-            let cstr = CStr::from_bytes_with_nul_unchecked(&s);
-            write!(f, "{}", cstr.to_string_lossy())
-        }
+            ))
+        };
+        write!(f, "{}", String::from_utf8_lossy(&s))
     }
 }
 
@@ -79,16 +78,16 @@ impl fmt::Display for SwIfIndex {
         // SAFETY: the variable argument list matches what the format_vnet_sw_if_index_name
         // implementation in VPP expects, and it's allowed for the s parameter to be null as
         // this is a VPP vector which automatically allocates on null. The function cannot fail
-        // so the return value is always a valid vector pointer.
-        unsafe {
-            let s = vppinfra::vec::Vec::from_raw(vlib_helper_format_vnet_sw_if_index_name(
+        // so the return value is always a valid vector pointer (of string bytes that aren't
+        // NUL-terminated).
+        let s = unsafe {
+            vppinfra::vec::Vec::from_raw(vlib_helper_format_vnet_sw_if_index_name(
                 std::ptr::null_mut(),
                 vnet_get_main(),
                 self.0,
-            ));
-            let cstr = CStr::from_bytes_with_nul_unchecked(&s);
-            write!(f, "{}", cstr.to_string_lossy())
-        }
+            ))
+        };
+        write!(f, "{}", String::from_utf8_lossy(&s))
     }
 }
 
@@ -131,16 +130,15 @@ impl fmt::Debug for ip4_header_t {
 
 impl fmt::Display for ip4_header_t {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // SAFETY: vlib_helper_format_ip4_header returns a valid Vec representing a C string (on
-        // allocation failure it aborts)
-        unsafe {
-            let s = vppinfra::vec::Vec::from_raw(vlib_helper_format_ip4_header(
+        // SAFETY: vlib_helper_format_ip4_header returns a valid Vec of (not NUL-terminated)
+        // string bytes (on allocation failure it aborts)
+        let s = unsafe {
+            vppinfra::vec::Vec::from_raw(vlib_helper_format_ip4_header(
                 std::ptr::null_mut(),
                 self,
                 std::mem::size_of::<Self>(),
-            ));
-            let cstr = CStr::from_bytes_with_nul_unchecked(&s);
-            write!(f, "{}", cstr.to_string_lossy())
-        }
+            ))
+        };
+        write!(f, "{}", String::from_utf8_lossy(&s))
     }
 }
