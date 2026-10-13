@@ -56,6 +56,7 @@ impl MainRef {
 ///
 /// See also [`MainRef`] for a variant without the constraint that the caller holds the
 /// main thread barrier.
+#[repr(transparent)]
 pub struct BarrierHeldMainRef(MainRef);
 
 impl BarrierHeldMainRef {
@@ -68,7 +69,8 @@ impl BarrierHeldMainRef {
     ///   applies during initialisation before worker threads are started or shutdown after
     ///   worker threads are stopped.
     pub unsafe fn from_ptr_mut<'a>(ptr: *mut vlib_main_t) -> &'a mut Self {
-        // SAFETY: caller must ensure the safety requirements are met
+        // SAFETY: caller must ensure the safety requirements are met, plus `BarrierHeldMainRef`
+        // is `repr(transparent)` over `MainRef`.
         unsafe {
             // Sanity check: barrier should only ever be held on main thread
             debug_assert!((*ptr).thread_index == 0);
