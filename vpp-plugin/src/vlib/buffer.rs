@@ -220,8 +220,9 @@ impl<FeatureData> BufferRef<FeatureData> {
     /// # Usage guidance
     ///
     /// Note that the pointer returned may point to uninitialised data depending on the context.
-    /// In addition, depending on the context, the remaining data the amount is expected.
-    /// Finally, if remaining data is sufficent and it's initialised it may not have been validated
+    /// In addition, depending on the context, the amount of remaining data may be less than
+    /// expected.
+    /// Finally, if remaining data is sufficient and it's initialised it may not have been validated
     /// so care must be taken in determining whether or not lengths in the headers can be trusted.
     pub fn current_ptr_mut(&mut self) -> *mut u8 {
         let data = self.data().cast_mut();
@@ -569,9 +570,9 @@ impl MainRef {
     ///   corresponding to the indices in `from_indices`.
     /// - Each index in `from_indices` must be valid and the caller must have ownership of the
     ///   buffer it corresponds to.
-    /// - Each buffer's `feature_arc_index` and `current_config_index` must be consistent with
-    ///   the `FeatureData` type. If they are not known (i.e. because the caller the node isn't
-    ///   being executed in a feature arc), FeatureData should be a zero-sized type such as `()`.
+    /// - Each buffer's `current_config_index` must be consistent with the `FeatureData` type. If
+    ///   they are not known (i.e. because the caller the node isn't being executed in a feature
+    ///   arc), FeatureData should be a zero-sized type such as `()`.
     /// - The capacity of `from_indices` must be a multiple of 8 (note though that the length is
     ///   allowed not to be). In other words, it must be valid to read multiples of 8 from the
     ///   underlying memory (possibly returning uninitialised or stale data) without faulting.

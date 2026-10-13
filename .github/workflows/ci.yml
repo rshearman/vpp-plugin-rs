@@ -5,7 +5,7 @@ on: [push, pull_request]
 env:
   rust_stable: stable
   rust_clippy: '1.95.0'
-  vpp: '26.02'
+  vpp: '26.06'
   CCACHE_DIR: ${{ github.workspace }}/.ccache
 
 jobs:

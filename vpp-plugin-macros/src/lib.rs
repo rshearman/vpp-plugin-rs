@@ -488,9 +488,16 @@ pub fn derive_error_counters(input: TokenStream) -> TokenStream {
 
 const CPU_MARCH_TO_CPU_AND_TARGET_FEATURE: &[(&str, Option<&str>, Option<&str>)] = &[
     ("scalar", Some("x86_64"), None),
-    ("hsw", Some("x86_64"), Some("avx2")),
-    ("skx", Some("x86_64"), Some("avx512f")),
-    ("icl", Some("x86_64"), Some("avx512bitalg")),
+    (
+        "x86_64_v3",
+        Some("x86_64"),
+        Some("avx2,bmi1,bmi2,f16c,fma,movbe,lzcnt,xsave"),
+    ),
+    (
+        "x86_64_v4",
+        Some("x86_64"),
+        Some("bmi1,bmi2,f16c,fma,movbe,lzcnt,avx512f,avx512bw,avx512dq,avx512vl,avx512cd"),
+    ),
     // Features equivalent to "v8.2a,sha2,aes", but avoiding use of unstable v8.2a feature
     (
         "octeontx2",

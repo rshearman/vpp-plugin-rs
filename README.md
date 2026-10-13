@@ -22,7 +22,7 @@ See vpp-example-plugin for how to build a plugin, including the `Cargo.toml` con
 
 At the moment, interface and crypto engine plugins are not supported, only plugins for nodes.
 
-Only VPP 26.02 is currently supported. Later versions may work, but small changes may be required.
+Only VPP 26.06 is currently supported. Later versions may work, but small changes may be required.
 
 ## Longer term goals
 
