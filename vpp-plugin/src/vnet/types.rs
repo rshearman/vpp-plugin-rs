@@ -121,7 +121,7 @@ impl SwIfIndex {
         let ret = unsafe {
             vlib_helper_unformat_vnet_sw_interface(i.as_ptr(), vnet_get_main(), &mut sw_if_index)
         };
-        if ret > 0 {
+        if ret > 0 && i.eof() {
             Ok(Self(sw_if_index))
         } else {
             Err(SwIfIndexParseError)

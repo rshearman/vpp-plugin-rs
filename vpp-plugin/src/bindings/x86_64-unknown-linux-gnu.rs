@@ -8753,6 +8753,9 @@ unsafe extern "C" {
     pub fn vlib_helper_unformat_free(input: *mut unformat_input_t);
 }
 unsafe extern "C" {
+    pub fn vlib_helper_unformat_check_input(i: *mut unformat_input_t) -> uword;
+}
+unsafe extern "C" {
     pub fn vl_api_helper_client_index_to_registration(index: u32_) -> *mut vl_api_registration_t;
 }
 unsafe extern "C" {

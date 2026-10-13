@@ -519,6 +519,12 @@ class IntegrationTestCase(VppTestCase):
         """VNET error being generated and returned from a CLI command"""
         self.cli_verify_response(f"rust-test negative vnet-error", "rust-test negative: Invalid value (Test)")
 
+    def test_vnet_sw_if_index_parse_error(self):
+        """Trailing input after interface name is rejected"""
+        # The command only splits arguments on spaces, but unformat stops the interface name token
+        # at a tab, so "pg0" is parsed as a valid interface name, leaving "foo" as trailing input
+        self.cli_verify_response(f"rust-test node {self.pg0.name}\tfoo", f"rust-test node: Invalid interface name {self.pg0.name}\tfoo")
+
     def test_message(self):
         """Messages"""
         self.cli_verify_no_response("rust-test message")

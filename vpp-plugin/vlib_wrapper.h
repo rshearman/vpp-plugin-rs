@@ -30,6 +30,7 @@ u8 *vlib_helper_format_ip6_header (u8 *s, ...);
 
 uword vlib_helper_unformat_get_input(unformat_input_t * input);
 void vlib_helper_unformat_free(unformat_input_t * input);
+uword vlib_helper_unformat_check_input(unformat_input_t * i);
 
 vl_api_registration_t *vl_api_helper_client_index_to_registration(u32 index);
 api_main_t *vlibapi_helper_get_main(void);
