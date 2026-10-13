@@ -19,19 +19,15 @@ from vpp_papi_provider import CliFailedCommandError
 from vpp_papi import VppEnum
 
 
-@tag_run_solo
-class IntegrationTestCase(VppTestCase):
-    """Integration tests"""
+class IntegrationTestBase(VppTestCase):
+    """Integration test setup and helpers"""
 
     pg0 = None
     pg1 = None
 
     @classmethod
     def setUpClass(cls):
-        super(IntegrationTestCase, cls).setUpClass()
-        cls.__doc__ = (
-            """Integration tests"""
-        )
+        super(IntegrationTestBase, cls).setUpClass()
         try:
             cls.create_pg_interfaces([0, 1])
             cls.pg0.config_ip4()
@@ -48,21 +44,21 @@ class IntegrationTestCase(VppTestCase):
             cls.pg1.resolve_ndp()
 
         except Exception:
-            super(IntegrationTestCase, cls).tearDownClass()
+            super(IntegrationTestBase, cls).tearDownClass()
             raise
 
     @classmethod
     def tearDownClass(cls):
-        super(IntegrationTestCase, cls).tearDownClass()
+        super(IntegrationTestBase, cls).tearDownClass()
 
     def setUp(self):
-        super(IntegrationTestCase, self).setUp()
+        super(IntegrationTestBase, self).setUp()
         self.pg0.enable_capture()
         self.pg1.enable_capture()
 
     def tearDown(self):
         self.vapi.collect_events()  # clear the event queue
-        super(IntegrationTestCase, self).tearDown()
+        super(IntegrationTestBase, self).tearDown()
 
     def cli_verify_no_response(self, cli):
         """execute a CLI, asserting that the response is empty"""
@@ -86,34 +82,6 @@ class IntegrationTestCase(VppTestCase):
             / UDP(dport=test_case, sport=sport)
         )
         return packet
-
-    def test_drop_cli(self):
-        """Drop with feature enabled via CLI"""
-        err = self.statistics.get_err_counter("/err/test/Drop")
-        self.cli_verify_no_response(f"rust-test node {self.pg0.name}")
-
-        packet = self.create_packet(1)
-        self.logger.info(ppp("Sending packet:", packet))
-        self.pg0.add_stream(packet)
-        self.pg_start()
-
-        self.logger.debug(self.vapi.cli("show trace"))
-
-        # Expect the packet counter to have been incremented by one
-        new_err = self.statistics.get_err_counter("/err/test/Drop")
-        self.assertEqual(new_err, err + 1)
-
-        # Now disable and expect the packet counter to not be incremented
-        err = new_err
-        self.cli_verify_no_response(f"rust-test node {self.pg0.name} disable")
-
-        packet = self.create_packet(1)
-        self.logger.info(ppp("Sending packet:", packet))
-        self.pg0.add_stream(packet)
-        self.pg_start()
-
-        new_err = self.statistics.get_err_counter("/err/test/Drop")
-        self.assertEqual(new_err, err)
 
     def enable_disable_api(self, sw_if_index, enable, node_type = "x1"):
 
@@ -149,6 +117,55 @@ class IntegrationTestCase(VppTestCase):
                 'dest': inet_pton(AF_INET, dest) if dest is not None else bytes([0, 0, 0, 0])
             },
         )
+
+    def barrier_rw_lock_sync(self, enable):
+        """set the deny policy from the test process node, which takes the barrier itself"""
+        updated = self.statistics.get_err_counter("/err/test-process/DenyPolicyUpdated")
+        self.vapi.api(
+            self.vapi.papi.test_barrier_rw_lock_sync,
+            {
+                'enable': enable,
+            },
+        )
+        # The process node applies it asynchronously, so wait for it to say it's done
+        for _ in range(50):
+            if self.statistics.get_err_counter("/err/test-process/DenyPolicyUpdated") > updated:
+                return
+            sleep(0.1)
+        self.fail("Process node didn't update the deny policy")
+
+
+@tag_run_solo
+class IntegrationTestCase(IntegrationTestBase):
+    """Integration tests"""
+
+    def test_drop_cli(self):
+        """Drop with feature enabled via CLI"""
+        err = self.statistics.get_err_counter("/err/test/Drop")
+        self.cli_verify_no_response(f"rust-test node {self.pg0.name}")
+
+        packet = self.create_packet(1)
+        self.logger.info(ppp("Sending packet:", packet))
+        self.pg0.add_stream(packet)
+        self.pg_start()
+
+        self.logger.debug(self.vapi.cli("show trace"))
+
+        # Expect the packet counter to have been incremented by one
+        new_err = self.statistics.get_err_counter("/err/test/Drop")
+        self.assertEqual(new_err, err + 1)
+
+        # Now disable and expect the packet counter to not be incremented
+        err = new_err
+        self.cli_verify_no_response(f"rust-test node {self.pg0.name} disable")
+
+        packet = self.create_packet(1)
+        self.logger.info(ppp("Sending packet:", packet))
+        self.pg0.add_stream(packet)
+        self.pg_start()
+
+        new_err = self.statistics.get_err_counter("/err/test/Drop")
+        self.assertEqual(new_err, err)
 
     def test_drop_api(self):
         """Drop with feature enabled via API"""
@@ -688,6 +705,46 @@ class IntegrationTestCase(VppTestCase):
                 'flags2': test_dir2.TEST_DIR2_RX | test_dir2.TEST_DIR2_TX,
             },
         )
+
+
+@tag_run_solo
+class WorkerIntegrationTestCase(IntegrationTestBase):
+    """Integration tests with a worker thread"""
+
+    # Without workers taking the barrier is a no-op in VPP, and packets are processed on the main
+    # thread rather than a worker
+    vpp_worker_count = 1
+
+    def test_barrier_rw_lock_sync(self):
+        """Write the barrier read/write lock, taking the barrier"""
+        err = self.statistics.get_err_counter("/err/test/Drop")
+        self.enable_disable_api(self.pg0.sw_if_index, True)
+        self.barrier_rw_lock_sync(True)
+
+        # Send a packet matching the source port policy
+        packet = self.create_packet(7, sport=7)
+        self.logger.info(ppp("Sending packet:", packet))
+        self.pg0.add_stream(packet)
+        self.pg_start()
+
+        self.logger.debug(self.vapi.cli("show trace"))
+
+        # Expect the packet counters to have been incremented by one
+        new_err = self.statistics.get_err_counter("/err/test/Drop")
+        self.assertEqual(new_err, err + 1)
+        err = new_err
+
+        # Clear the policy and send the matching packet again
+        self.barrier_rw_lock_sync(False)
+        self.send_and_expect(self.pg0, packet, self.pg1)
+
+        # Expect the packet counters to be unchanged
+        new_err = self.statistics.get_err_counter("/err/test/Drop")
+        self.assertEqual(new_err, err)
+
+        # Clean up
+        self.enable_disable_api(self.pg0.sw_if_index, False)
+
 
 if __name__ == "__main__":
     unittest.main(testRunner=VppTestRunner)

@@ -1096,6 +1096,19 @@ impl test_api::Handlers for ApiHandler {
         Ok(Default::default())
     }
 
+    fn test_barrier_rw_lock_sync(
+        _vm: &vlib::BarrierHeldMainRef,
+        mp: &test_api::TestBarrierRwLockSync,
+    ) -> Result<vlibapi::Message<test_api::TestBarrierRwLockSyncReply>, i32> {
+        // API handlers already run with the barrier held, so hand the write off to the process
+        // node which doesn't
+        TEST_PROCESS_NODE
+            .channel_sender()
+            .send(ProcessMessage::SetDenyPolicy(mp.enable.then_some(7)))
+            .map_err(|_| VNET_ERR_INVALID_ARGUMENT)?;
+        Ok(Default::default())
+    }
+
     fn test_process_node(
         _vm: &vlib::BarrierHeldMainRef,
         mp: &test_api::TestProcessNode,
@@ -1121,6 +1134,7 @@ static TEST_PROCESS_NODE: TestProcessNode = TestProcessNode::new();
 enum ProcessMessage {
     Enable(Ipv4Addr),
     Disable,
+    SetDenyPolicy(Option<u16>),
 }
 
 type GetOnceProcessMessageReceiver = Mutex<Option<Receiver<ProcessMessage>>>;
@@ -1135,6 +1149,8 @@ enum TestProcessNextNode {
 enum TestProcessErrorCounter {
     #[error_counter(description = "Buffer allocation", severity = ERROR)]
     BufferAllocation,
+    #[error_counter(description = "Deny policy updates", severity = INFO)]
+    DenyPolicyUpdated,
 }
 
 #[vlib_process_node(
@@ -1297,6 +1313,14 @@ impl vlib::ProcessNode for TestProcessNode {
                     packet_send_timer.set(sleep(Duration::from_millis(100)));
                 }
                 Some(ProcessMessage::Disable) => destination = None,
+                Some(ProcessMessage::SetDenyPolicy(policy)) => {
+                    *TEST_NODE.udp_src_port_deny_policy.write_sync(vm) = policy;
+                    node.increment_process_error_counter(
+                        vm,
+                        TestProcessErrorCounter::DenyPolicyUpdated,
+                        1,
+                    );
+                }
                 None => unreachable!(
                     "The sender should never be dropped as it's part of the TEST_PROCESS_NODE singleton"
                 ),

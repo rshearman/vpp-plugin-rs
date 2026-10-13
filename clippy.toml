@@ -1,5 +1,6 @@
 # Although safe from a memory perspective, using a barrier read/write lock across a suspend point
 # is likely a misuse and risks panics from a write while a write or reads are outstanding
 await-holding-invalid-types = [
-    "vpp_plugin::vlib::main::sync::BarrierRwLockReadGuard", "vpp_plugin::vlib::main::sync::BarrierRwLockWriteGuard"
+    "vpp_plugin::vlib::main::sync::BarrierRwLockReadGuard", "vpp_plugin::vlib::main::sync::BarrierRwLockWriteGuard",
+    "vpp_plugin::vlib::main::sync::BarrierRwLockSyncWriteGuard", "vpp_plugin::vlib::main::BarrierGuard",
 ]
