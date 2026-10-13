@@ -3,9 +3,11 @@
 //! This module contains abstractions around VPP's `vlib_main_t` structure.
 //! It provides safe access to the main VPP library context.
 
-use std::ops::Deref;
+use std::{marker::PhantomData, ops::Deref, panic::Location};
 
-use crate::bindings::vlib_main_t;
+use crate::bindings::{
+    vlib_main_t, vlib_worker_thread_barrier_release, vlib_worker_thread_barrier_sync_int,
+};
 
 pub mod sync;
 
@@ -44,6 +46,71 @@ impl MainRef {
     pub fn thread_index(&self) -> u16 {
         // SAFETY: as long as `self` is a valid `MainRef`, so is the pointer dereference
         unsafe { (*self.as_ptr()).thread_index }
+    }
+
+    /// Takes the VPP worker thread barrier, stopping all worker threads
+    ///
+    /// Returns an RAII guard which releases the barrier when dropped and which dereferences to a
+    /// [`BarrierHeldMainRef`] for use with APIs that require the barrier to be held.
+    ///
+    /// The barrier is recursive in VPP, so it is fine to call this when the barrier is already
+    /// held. If there are no worker threads then this is cheap.
+    ///
+    /// The returned guard must not be held across an async await.
+    ///
+    /// # Panics
+    ///
+    /// Panics if not called on the VPP main thread.
+    #[track_caller]
+    pub fn barrier_sync(&self) -> BarrierGuard<'_> {
+        assert_eq!(
+            self.thread_index(),
+            0,
+            "Barrier can only be taken on the VPP main thread"
+        );
+        // SAFETY: `self` is a valid main thread `vlib_main_t` and the file name is a
+        // `'static` nul-terminated string, since VPP stores the pointer for debugging/elog.
+        unsafe {
+            vlib_worker_thread_barrier_sync_int(
+                self.as_ptr(),
+                Location::caller().file_as_c_str().as_ptr(),
+            );
+        }
+        BarrierGuard {
+            vm: self,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// RAII guard for the VPP worker thread barrier, returned by [`MainRef::barrier_sync`]
+///
+/// The barrier is released when this guard is dropped. Leaking the guard (e.g. via
+/// [`std::mem::forget`]) leaves the barrier held, which stalls workers but isn't unsound.
+#[must_use = "if unused the barrier will immediately be released"]
+pub struct BarrierGuard<'vm> {
+    vm: &'vm MainRef,
+    /// Prevent the type from being `Send` or `Sync`: the barrier must be released on the main
+    /// thread. Since `MainRef` isn't currently `Sync` this is defensive in case that changes in
+    /// the future.
+    _phantom: PhantomData<*mut ()>,
+}
+
+impl Deref for BarrierGuard<'_> {
+    type Target = BarrierHeldMainRef;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the barrier is held for the lifetime of the guard, `BarrierHeldMainRef` is
+        // `repr(transparent)` over `MainRef`, and we only hand out a shared reference.
+        unsafe { &*(self.vm as *const MainRef as *const BarrierHeldMainRef) }
+    }
+}
+
+impl Drop for BarrierGuard<'_> {
+    fn drop(&mut self) {
+        // SAFETY: the barrier was taken by `barrier_sync` on this (main) thread and the guard
+        // can't have moved to another thread.
+        unsafe { vlib_worker_thread_barrier_release(self.vm.as_ptr()) }
     }
 }
 

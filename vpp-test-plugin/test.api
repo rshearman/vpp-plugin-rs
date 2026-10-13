@@ -170,6 +170,14 @@ autoreply autoendian define test_barrier_rw_lock
   bool enable;
 };
 
+autoreply autoendian define test_barrier_rw_lock_sync
+{
+  u32 client_index;
+  u32 context;
+  // Enable source port policy drop, written from a process node taking the barrier itself
+  bool enable;
+};
+
 autoreply autoendian define test_process_node
 {
   u32 client_index;

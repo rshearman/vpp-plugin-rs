@@ -8,7 +8,7 @@ use std::{
     ptr::NonNull,
 };
 
-use crate::vlib::{BarrierHeldMainRef, MainRef};
+use crate::vlib::{BarrierHeldMainRef, MainRef, main::BarrierGuard};
 
 /// A read/write lock using VPP's barrier to provide exclusion between threads
 ///
@@ -78,6 +78,31 @@ impl<T: ?Sized> BarrierRwLock<T> {
         // SAFETY: `BarrierRwLockWriteGuard::new` is only called on the main thread while the
         // barrier is held.
         unsafe { BarrierRwLockWriteGuard::new(self) }
+    }
+
+    /// Takes the VPP barrier and locks this `BarrierRwLock` with write access.
+    ///
+    /// This is used on the VPP main thread in contexts where the VPP barrier isn't already held.
+    /// If it is already known to be held, prefer [`BarrierRwLock::write`].
+    ///
+    /// Returns an RAII guard which will release this thread's access, and then the barrier,
+    /// once it is dropped.
+    ///
+    /// The returned guard must not be held across an async await.
+    ///
+    /// # Panics
+    ///
+    /// Panics if not called on the VPP main thread, or if a read or another write lock has
+    /// already been taken by this thread and not dropped.
+    pub fn write_sync<'a>(&'a self, vm: &'a MainRef) -> BarrierRwLockSyncWriteGuard<'a, T> {
+        let barrier = vm.barrier_sync();
+        // SAFETY: `barrier` is held for the lifetime of the returned guard, and `inner` is
+        // dropped before `barrier`.
+        let inner = unsafe { BarrierRwLockWriteGuard::new(self) };
+        BarrierRwLockSyncWriteGuard {
+            inner,
+            _barrier: barrier,
+        }
     }
 
     /// Get a mutable reference to the contained data without locking.
@@ -296,6 +321,50 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for BarrierRwLockWriteGuard<'_, T> {
 }
 
 impl<T: ?Sized + fmt::Display> fmt::Display for BarrierRwLockWriteGuard<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
+/// Exclusive write guard that also holds the VPP barrier, returned by
+/// [`BarrierRwLock::write_sync`].
+pub struct BarrierRwLockSyncWriteGuard<'a, T: ?Sized + 'a> {
+    // Note: field order matters - `inner` must drop (clearing `writer`) before the barrier is
+    // released.
+    inner: BarrierRwLockWriteGuard<'a, T>,
+    _barrier: BarrierGuard<'a>,
+}
+
+// SAFETY: as for `BarrierRwLockWriteGuard`, a shared reference only gives out `&T`, and the
+// barrier keeps worker threads stopped for as long as that reference can live. `BarrierGuard`
+// isn't `Sync` because it hands out a `&BarrierHeldMainRef`, which must not reach a thread other
+// than the one owning the `vlib_main_t`. `_barrier` is private and never exposed, so this
+// remains sound only while no accessor for it is added.
+unsafe impl<T: ?Sized + Sync> Sync for BarrierRwLockSyncWriteGuard<'_, T> {}
+
+impl<T: ?Sized> Deref for BarrierRwLockSyncWriteGuard<'_, T> {
+    type Target = T;
+
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        &self.inner
+    }
+}
+
+impl<T: ?Sized> DerefMut for BarrierRwLockSyncWriteGuard<'_, T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
+}
+
+impl<T: ?Sized + fmt::Debug> fmt::Debug for BarrierRwLockSyncWriteGuard<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
+impl<T: ?Sized + fmt::Display> fmt::Display for BarrierRwLockSyncWriteGuard<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
