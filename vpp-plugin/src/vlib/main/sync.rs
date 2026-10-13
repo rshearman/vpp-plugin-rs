@@ -53,7 +53,7 @@ impl<T: ?Sized> BarrierRwLock<T> {
     ///
     /// Panics if a write lock has already been taken by this thread and not dropped.
     #[inline(always)]
-    pub fn read(&self, vm: &MainRef) -> BarrierRwLockReadGuard<'_, T> {
+    pub fn read<'a>(&'a self, vm: &'a MainRef) -> BarrierRwLockReadGuard<'a, T> {
         let main_thread = vm.thread_index() == 0;
         // SAFETY: calling `BarrierRwLockReadGuard::new` is valid when we have a reference to the lock
         // and we are on a known VPP thread. These conditions are satisfied by the public API.
@@ -72,7 +72,7 @@ impl<T: ?Sized> BarrierRwLock<T> {
     /// Panics if a read or another write lock has already been taken by this thread and not
     /// dropped.
     #[inline(always)]
-    pub fn write(&self, vm: &BarrierHeldMainRef) -> BarrierRwLockWriteGuard<'_, T> {
+    pub fn write<'a>(&'a self, vm: &'a BarrierHeldMainRef) -> BarrierRwLockWriteGuard<'a, T> {
         // Make sure we match the check in read()
         debug_assert_eq!(vm.thread_index(), 0);
         // SAFETY: `BarrierRwLockWriteGuard::new` is only called on the main thread while the
