@@ -87,6 +87,11 @@ void vlib_helper_unformat_free(unformat_input_t * input)
     unformat_free(input);
 }
 
+uword vlib_helper_unformat_check_input(unformat_input_t * i)
+{
+    return unformat_check_input(i);
+}
+
 vl_api_registration_t *
 vl_api_helper_client_index_to_registration(u32 index)
 {

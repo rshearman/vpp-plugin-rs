@@ -9,7 +9,6 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr},
     pin::pin,
     ptr::NonNull,
-    str::FromStr,
     sync::{LazyLock, Mutex, atomic::AtomicU64},
     time::Duration,
 };
@@ -494,7 +493,7 @@ fn chain_enable_disable_command(
     let name = args
         .first()
         .ok_or_else(|| ErrorStack::msg("Missing interface name"))?;
-    let sw_if_index = SwIfIndex::from_str(name)
+    let sw_if_index = SwIfIndex::parse(vm, name)
         .map_err(|_| ErrorStack::msg(format!("Invalid interface name {name}")))?;
     let bit = 1u64
         .checked_shl(u32::from(sw_if_index))
@@ -535,7 +534,7 @@ fn enable_disable_command(
     }
 
     let mut enable = true;
-    let sw_if_index = SwIfIndex::from_str(args[0])
+    let sw_if_index = SwIfIndex::parse(vm, args[0])
         .map_err(|_| ErrorStack::msg(format!("Invalid interface name {}", args[0])))?;
 
     if args.len() >= 2 {

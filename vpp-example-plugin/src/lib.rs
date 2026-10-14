@@ -26,7 +26,7 @@
 //! The plugin is intentionally small and focussed and can be used as a
 //! template when implementing your own feature.
 
-use std::{fmt, str::FromStr};
+use std::fmt;
 
 use vpp_plugin::{
     ErrorCounters, NextNodes,
@@ -176,7 +176,7 @@ fn enable_disable_command(
     }
 
     let mut enable = true;
-    let sw_if_index = SwIfIndex::from_str(args[0])
+    let sw_if_index = SwIfIndex::parse(vm, args[0])
         .map_err(|_| ErrorStack::msg(format!("Invalid interface name {}", args[0])))?;
 
     if args.len() >= 2 {
