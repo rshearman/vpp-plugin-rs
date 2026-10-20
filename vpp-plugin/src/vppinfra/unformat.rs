@@ -3,8 +3,8 @@
 use std::ffi::c_int;
 
 use crate::bindings::{
-    unformat_init_string, unformat_input_t, uword, vlib_helper_unformat_free,
-    vlib_helper_unformat_get_input,
+    unformat_init_string, unformat_input_t, uword, vlib_helper_unformat_check_input,
+    vlib_helper_unformat_free, vlib_helper_unformat_get_input,
 };
 
 const UNFORMAT_END_OF_INPUT: uword = !0;
@@ -46,6 +46,14 @@ impl UnformatInput {
     /// Returns a raw pointer to the underlying `unformat_input_t`
     pub fn as_ptr(&mut self) -> *mut unformat_input_t {
         &mut self.0
+    }
+
+    /// Return true if input is exhausted.
+    ///
+    /// Input may be filled as a side effect.
+    pub fn eof(&mut self) -> bool {
+        // SAFETY: self is a valid unformat_input_t
+        unsafe { vlib_helper_unformat_check_input(self.as_ptr()) == UNFORMAT_END_OF_INPUT }
     }
 }
 
