@@ -1,3 +1,14 @@
+# 0.3.0 (24th October 2026)
+
+### Added
+
+ * Register VPP's baseline node function variant
+ * Support version_required in vlib_plugin_register
+
+### Changed
+
+ * Change supported VPP version to 26.06
+
 # 0.2.1 (30th May 2026)
 
 ### Added

@@ -29,7 +29,7 @@ pin-project-lite = {version = "0.2.17", optional = true }
 slab = "0.4.12"
 # In lieu of https://github.com/rust-lang/rust/issues/44930
 va_list = "0.2.1"
-vpp-plugin-macros = { version = "0.2.1", path = "../vpp-plugin-macros" }
+vpp-plugin-macros = { version = "0.3.0", path = "../vpp-plugin-macros" }
 
 [dev-dependencies]
 criterion = "0.8.1"
