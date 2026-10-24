@@ -1,3 +1,25 @@
+# 0.3.0 (24th October 2026)
+
+### Added
+
+* vlib: main: support taking the barrier
+* Export VPP_BUILD_VER
+
+### Changed
+
+* Change supported VPP version to 26.06
+* vnet: types: simplify ip6_header_t Clone impl
+
+### Fixed
+
+* vlib: buffer: fix the documentation of current_ptr_mut
+* vlib: main: make BarrierHeldMainRef repr(transparent)
+* vlib: sync: fix lifetime of read and write method
+* vnet: types: fix Display impls missing last character
+* vnet: types: fix unsoundness in SwIfIndex Display and FromStr impls
+* vnet: types: error on trailing input for SwIfIndex parsing
+* node_generic: x4 feature-next shortcut must match config index, advance all four
+
 # 0.2.2 (30th May 2026)
 
 ### Added
