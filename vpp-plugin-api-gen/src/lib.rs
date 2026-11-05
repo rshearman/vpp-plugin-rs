@@ -682,7 +682,7 @@ impl ApiGenContext<'_> {
         writeln!(
             self.output_file,
             "pub struct {}(pub {});",
-            upper_camel_name, &e.size,
+            upper_camel_name, e.size,
         )?;
 
         writeln!(self.output_file)?;
@@ -767,14 +767,14 @@ impl ApiGenContext<'_> {
         writeln!(
             self.output_file,
             "pub struct {}({});",
-            upper_camel_name, &e.size,
+            upper_camel_name, e.size,
         )?;
         writeln!(self.output_file)?;
         writeln!(self.output_file, "::vpp_plugin::bitflags::bitflags! {{",)?;
         writeln!(
             self.output_file,
             "    impl {}: {} {{",
-            upper_camel_name, &e.size,
+            upper_camel_name, e.size,
         )?;
 
         let upper_name = format!("{}_", e.name.to_uppercase());
