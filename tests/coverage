@@ -1,9 +1,7 @@
 #! /bin/bash
 
-vpp_ws_dir=$1
-
-if [ -z "${vpp_ws_dir}" ]; then
-    echo "Usage: $0 <vpp-ws-dir>" >&2
+if [ $# -gt 1 ]; then
+    echo "Usage: $0 [<vpp-ws-dir>]" >&2
     exit 1
 fi
 
@@ -16,7 +14,7 @@ export RUSTFLAGS=-Cinstrument-coverage
 
 cargo test --workspace
 
-$(dirname "$0")/run "${vpp_ws_dir}"
+$(dirname "$0")/run "$@"
 
 grcov . /tmp/vpp-unittest-IntegrationTestCase/ /tmp/vpp-unittest-ExampleTestCase/ --binary-path target/debug -s . --ignore-not-existing --ignore 'target/*' --ignore '/*' -t html -o target/coverage
 rm *.profraw */*.profraw /tmp/vpp-unittest-IntegrationTestCase/*.profraw /tmp/vpp-unittest-ExampleTestCase/*.profraw

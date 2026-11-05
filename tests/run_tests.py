@@ -921,6 +921,8 @@ if __name__ == "__main__":
     print(f"Config is: {config}")
 
     if config.api_preload:
+        # Without an install dir, a None entry makes vpp_papi search
+        # VPP_API_DIR and then the system location
         VPPApiJSONFiles.load_api(apidir=config.extern_apidir + [config.vpp_install_dir])
 
     test_finished_join_timeout = 15
