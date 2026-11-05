@@ -539,7 +539,7 @@ impl ApiGenContext<'_> {
         )?;
         writeln!(
             self.output_file,
-            "        s.extend(format!(\"{{:?}}\", &*t).as_bytes());"
+            "        s.extend(format!(\"{{:?}}\", *t).as_bytes());"
         )?;
         writeln!(self.output_file, "        s.into_raw()")?;
         writeln!(self.output_file, "    }}")?;
