@@ -245,3 +245,13 @@ impl vlib_plugin_registration_t {
         }
     }
 }
+
+impl vlib_error_desc_t {
+    pub const fn new() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
