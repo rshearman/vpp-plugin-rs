@@ -1,0 +1,6 @@
+option version = "1.0.0";
+
+/* Shadowed by the version in include_dir1, so must not be used */
+typedef include_dir_type2 {
+    u64 value;
+};

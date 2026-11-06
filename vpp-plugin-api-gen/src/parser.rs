@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::File,
     io::read_to_string,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -515,12 +516,18 @@ pub enum Error {
     ArrayVariableNotFound(String, String),
     #[error("String field \"{0}\" must be declared as an array")]
     StringNotArray(String),
+    #[error("Unable to find import \"{import}\" in include directories {include_dirs:?}")]
+    ImportNotFound {
+        import: String,
+        include_dirs: Vec<PathBuf>,
+    },
 }
 
-fn parse_file(filename: &str) -> Result<Vec<Statement>, Error> {
-    let file = File::open(filename).map_err(|e| Error::Io(filename.to_string(), e))?;
-    let input = read_to_string(file).map_err(|e| Error::Io(filename.to_string(), e))?;
-    api_parser::statement_list(&input).map_err(|e| Error::Parser(filename.to_string(), e))
+fn parse_file(filename: &Path) -> Result<Vec<Statement>, Error> {
+    let display_name = || filename.display().to_string();
+    let file = File::open(filename).map_err(|e| Error::Io(display_name(), e))?;
+    let input = read_to_string(file).map_err(|e| Error::Io(display_name(), e))?;
+    api_parser::statement_list(&input).map_err(|e| Error::Parser(display_name(), e))
 }
 
 impl Field {
@@ -865,6 +872,10 @@ pub struct ApiParser {
     messages: Vec<Message>,
     services: Vec<Service>,
     imports: Vec<String>,
+    /// Paths searched, in order, to find imported files
+    include_dirs: Vec<PathBuf>,
+    /// Resolved paths of all files imported, directly or indirectly
+    imported_files: Vec<PathBuf>,
     aliases: Vec<Alias>,
     unions: Vec<Union>,
     types: Vec<Type>,
@@ -875,10 +886,17 @@ pub struct ApiParser {
 }
 
 impl ApiParser {
-    pub fn new(filename: &str) -> Result<Self, Error> {
-        let statements = parse_file(filename)?;
+    /// Parse the given API file
+    ///
+    /// Imports are searched for in each of `include_dirs` in order, with the first match being
+    /// used. If `include_dirs` is empty, imports are resolved relative to the current directory.
+    pub fn new(filename: &str, include_dirs: &[PathBuf]) -> Result<Self, Error> {
+        let statements = parse_file(Path::new(filename))?;
 
-        let mut me = Self::default();
+        let mut me = Self {
+            include_dirs: include_dirs.to_vec(),
+            ..Default::default()
+        };
 
         me.do_imports(&statements)?;
         // Side effect: register types
@@ -895,13 +913,30 @@ impl ApiParser {
                 continue;
             };
 
-            let imported_statements = parse_file(import_filename)?;
+            let import_path = self.resolve_import(import_filename)?;
+            let imported_statements = parse_file(&import_path)?;
+            self.imported_files.push(import_path);
             self.do_imports(&imported_statements)?;
 
             self.process_statements(imported_statements, Some(import_filename))?;
         }
 
         Ok(())
+    }
+
+    fn resolve_import(&self, import_filename: &str) -> Result<PathBuf, Error> {
+        if self.include_dirs.is_empty() {
+            return Ok(PathBuf::from(import_filename));
+        }
+
+        self.include_dirs
+            .iter()
+            .map(|include_dir| include_dir.join(import_filename))
+            .find(|path| path.is_file())
+            .ok_or_else(|| Error::ImportNotFound {
+                import: import_filename.to_string(),
+                include_dirs: self.include_dirs.clone(),
+            })
     }
 
     fn crc_for_fields(&self, fields: &[Field], debug: bool) -> Result<crc32fast::Hasher, Error> {
@@ -1303,6 +1338,11 @@ impl ApiParser {
         &self.imports
     }
 
+    /// Resolved paths of all files imported, directly or indirectly
+    pub fn imported_files(&self) -> &[PathBuf] {
+        &self.imported_files
+    }
+
     pub fn unions(&self) -> &[Union] {
         &self.unions
     }
@@ -1347,14 +1387,17 @@ impl ApiParser {
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::{ApiParser, Error, FieldSize, OptionStatement};
+    use crate::parser::{ApiParser, Error, FieldSize, OptionStatement, TypeDetails};
     use pretty_assertions::assert_eq;
 
     #[test]
     fn sanity() {
-        let api = ApiParser::new(&format!("{}/tests/sanity.api", env!("CARGO_MANIFEST_DIR")))
-            .inspect_err(|e| println!("{}", e))
-            .expect("failed");
+        let api = ApiParser::new(
+            &format!("{}/tests/sanity.api", env!("CARGO_MANIFEST_DIR")),
+            &[],
+        )
+        .inspect_err(|e| println!("{}", e))
+        .expect("failed");
 
         let options: Vec<_> = api
             .options()
@@ -1806,7 +1849,7 @@ mod tests {
 
     /// Parse a file and expect an error, returning that error
     fn parse_file_expect_error(filename: &str) -> Error {
-        match ApiParser::new(&format!("{}/{}", env!("CARGO_MANIFEST_DIR"), filename)) {
+        match ApiParser::new(&format!("{}/{}", env!("CARGO_MANIFEST_DIR"), filename), &[]) {
             Ok(_) => panic!("unexpectedly parsed {} successfully", filename),
             Err(e) => e,
         }
@@ -1961,6 +2004,54 @@ mod tests {
         assert_eq!(
             parse_file_expect_error("tests/string_not_array.api").to_string(),
             "String field \"s\" must be declared as an array"
+        );
+    }
+
+    #[test]
+    fn include_dirs() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let include_dir1 = manifest_dir.join("tests/include_dir1");
+        let include_dir2 = manifest_dir.join("tests/include_dir2");
+        let api = ApiParser::new(
+            &manifest_dir.join("tests/include_dir.api").to_string_lossy(),
+            &[include_dir1.clone(), include_dir2.clone()],
+        )
+        .inspect_err(|e| println!("{}", e))
+        .expect("failed");
+
+        assert_eq!(api.imports(), ["nested/include_dir_types.api"]);
+        // Nested imports are also searched for in the include directories, with earlier include
+        // directories taking precedence
+        assert_eq!(
+            api.imported_files(),
+            [
+                include_dir2.join("nested/include_dir_types.api"),
+                include_dir1.join("nested/include_dir_types2.api"),
+            ]
+        );
+        let TypeDetails::TypedefBlock { fields } =
+            &api.lookup_global_type("include_dir_type2").unwrap().details
+        else {
+            panic!("include_dir_type2 is not a typedef block");
+        };
+        assert_eq!(fields[0].r#type, "u32");
+    }
+
+    #[test]
+    fn import_not_found() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let include_dir1 = manifest_dir.join("tests/include_dir1");
+        let err = ApiParser::new(
+            &manifest_dir.join("tests/include_dir.api").to_string_lossy(),
+            std::slice::from_ref(&include_dir1),
+        )
+        .expect_err("unexpectedly parsed successfully");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Unable to find import \"nested/include_dir_types.api\" in include directories [{:?}]",
+                include_dir1
+            )
         );
     }
 }

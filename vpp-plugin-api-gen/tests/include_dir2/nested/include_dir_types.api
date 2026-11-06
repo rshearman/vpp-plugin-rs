@@ -1,0 +1,7 @@
+option version = "1.0.0";
+
+import "nested/include_dir_types2.api";
+
+typedef include_dir_type {
+    vl_api_include_dir_type2_t inner;
+};

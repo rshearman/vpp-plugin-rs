@@ -1,0 +1,5 @@
+option version = "1.0.0";
+
+typedef include_dir_type2 {
+    u32 value;
+};
