@@ -751,6 +751,12 @@ impl ApiGenContext<'_> {
                 variant.id, variant.id,
             )?;
         }
+        // If the enum has no gaps, this is unreachable. Not worth the effort of working this out,
+        // so just suppress the warning.
+        writeln!(
+            self.output_file,
+            "            #[allow(unreachable_patterns)]"
+        )?;
         writeln!(self.output_file, "            _ => {{")?;
         writeln!(self.output_file, "                let tmp = self.0;")?;
         writeln!(self.output_file, "                tmp.fmt(f)")?;
