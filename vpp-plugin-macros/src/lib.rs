@@ -472,7 +472,7 @@ pub fn derive_error_counters(input: TokenStream) -> TokenStream {
                     name: #name.as_ptr() as *mut std::ffi::c_char,
                     desc: #description.as_ptr() as *mut std::ffi::c_char,
                     severity: ::vpp_plugin::bindings::#severity,
-                    stats_entry_index: 0,
+                    ..::vpp_plugin::bindings::vlib_error_desc_t::new()
                 },
             ));
         }
