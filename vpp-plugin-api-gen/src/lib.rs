@@ -52,7 +52,7 @@ use std::{
     env,
     fs::{DirBuilder, File},
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use thiserror::Error;
@@ -157,13 +157,34 @@ impl ApiParserRustExt for ApiParser {
 ///     include!(concat!(env!("OUT_DIR"), "/src/example_api.rs"));
 /// }
 /// ```
+///
+/// If the API file imports other API files that live elsewhere, for example those installed by
+/// VPP, then the directories to search for them can be specified using
+/// [`include_dir`](Builder::include_dir):
+///
+/// ```no_run
+/// use std::{env, path::PathBuf};
+///
+/// let output_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("src");
+/// vpp_plugin_api_gen::Builder::new("example.api", &output_dir.to_string_lossy())
+///     .expect("unable to generate API binding")
+///     .include_dir(".")
+///     .include_dir("/usr/include")
+///     .generate()
+///     .expect("unable to generate API binding");
+/// ```
 #[derive(Debug)]
 pub struct Builder {
-    parser: ApiParser,
+    input_file: String,
+    include_dirs: Vec<PathBuf>,
 
     module: String,
-    output_file: File,
-    output_json_file: File,
+    output_file: PathBuf,
+    output_json_file: PathBuf,
+}
+
+fn in_build_script() -> bool {
+    env::var("OUT_DIR").is_ok() && env::var("CARGO_MANIFEST_DIR").is_ok()
 }
 
 impl Builder {
@@ -172,9 +193,8 @@ impl Builder {
     /// Both a `<api-module>_api.rs` and a `<api-module>.api.json` file will be generated in
     /// the output directory.
     pub fn new(input_file: &str, output_dir: &str) -> Result<Self, Error> {
-        let in_build_script = env::var("OUT_DIR").is_ok() && env::var("CARGO_MANIFEST_DIR").is_ok();
-        if in_build_script {
-            println!("cargo:cargo-rerun-if-changed={}", input_file);
+        if in_build_script() {
+            println!("cargo:rerun-if-changed={}", input_file);
         }
 
         // Get file name without path
@@ -189,20 +209,27 @@ impl Builder {
         let output_file = Path::new(output_dir).join(format!("{}_api.rs", module));
         let output_json_file = Path::new(output_dir).join(format!("{}.api.json", module));
 
-        let parser = ApiParser::new(input_file)?;
-
-        if in_build_script {
-            for import in parser.imports() {
-                println!("cargo:cargo-rerun-if-changed={}", import);
-            }
-        }
-
         Ok(Self {
-            parser,
+            input_file: input_file.to_string(),
+            include_dirs: Vec::new(),
             module,
-            output_file: File::create(&output_file)?,
-            output_json_file: File::create(&output_json_file)?,
+            output_file,
+            output_json_file,
         })
+    }
+
+    /// Add a directory to search for imported API files
+    ///
+    /// Directories are searched in the order they were added, and the first one containing the
+    /// imported file is used. If no include directories are added, then imports are resolved
+    /// relative to the current directory.
+    ///
+    /// When run from a build script, only the imported files that were actually used are
+    /// reported to Cargo, so adding a file to an earlier include directory that would shadow
+    /// one of them won't trigger regeneration until the build script reruns for another reason.
+    pub fn include_dir(mut self, path: impl AsRef<Path>) -> Self {
+        self.include_dirs.push(path.as_ref().to_path_buf());
+        self
     }
 
     /// Generate Rust code for the API file
@@ -210,11 +237,20 @@ impl Builder {
     /// Both a `<api-module>_api.rs` and a `<api-module>.api.json` file will be generated in
     /// the output directory.
     pub fn generate(self) -> Result<(), Error> {
+        let parser = ApiParser::new(&self.input_file, &self.include_dirs)?;
+
+        if in_build_script() {
+            for import in parser.imported_files() {
+                println!("cargo:rerun-if-changed={}", import.display());
+            }
+        }
+
+        // Only create (and truncate) the output files once parsing has succeeded
         ApiGenContext {
-            parser: &self.parser,
+            parser: &parser,
             module: self.module,
-            output_file: self.output_file,
-            output_json_file: self.output_json_file,
+            output_file: File::create(&self.output_file)?,
+            output_json_file: File::create(&self.output_json_file)?,
         }
         .generate()
     }
@@ -991,7 +1027,7 @@ impl ApiGenContext<'_> {
                         writeln!(
                             self.output_file,
                             "            self.{} = self.{}.to_be();",
-                            field_name, field.name
+                            field_name, field_name
                         )?;
                     }
                 },

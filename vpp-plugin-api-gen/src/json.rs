@@ -316,8 +316,11 @@ mod tests {
 
     #[test]
     fn sanity() {
-        let api = ApiParser::new(&format!("{}/tests/sanity.api", env!("CARGO_MANIFEST_DIR")))
-            .expect("failed");
+        let api = ApiParser::new(
+            &format!("{}/tests/sanity.api", env!("CARGO_MANIFEST_DIR")),
+            &[],
+        )
+        .expect("failed");
         let json = generate_json(&api).expect("generating JSON failed");
 
         let expected_json: serde_json::Value = serde_json::from_reader(
