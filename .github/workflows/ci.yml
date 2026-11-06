@@ -81,6 +81,6 @@ jobs:
       - name: Run unit tests
         run: cargo test --workspace
       - name: Run integration tests
-        run: tests/run /tmp/build/vpp
+        run: tests/run
         env:
           OUTPUT_LOGS_ON_FAILURE: 1

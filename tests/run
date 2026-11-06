@@ -1,10 +1,14 @@
 #! /bin/bash
 
-vpp_ws_dir=$1
-
-if [ -z "${vpp_ws_dir}" ]; then
-    echo "Usage: $0 <vpp-ws-dir>" >&2
+if [ $# -gt 1 ]; then
+    echo "Usage: $0 [<vpp-ws-dir>]" >&2
     exit 1
+fi
+
+# Without a workspace, the system-installed vpp is used
+vpp_args=()
+if [ -n "$1" ]; then
+    vpp_args=(--vpp-tag=vpp --vpp-ws-dir="$1")
 fi
 
 cargo build || exit $?
@@ -28,7 +32,7 @@ ln -f ../target/debug/libvpp_example_plugin.so plugin-libs/example_plugin.so || 
 ln -f ../target/debug/libvpp_test_plugin.so plugin-libs/test_plugin.so || exit $?
 ln -f ../target/debug/libvpp_test_version_mismatch_plugin.so plugin-libs/version_mismatch_plugin.so || exit $?
 
-python3 run_tests.py --vpp-tag=vpp --vpp-ws-dir="${vpp_ws_dir}" --filter *.*.* --extern-plugin-dir $(pwd)/plugin-libs/
+python3 run_tests.py "${vpp_args[@]}" --filter *.*.* --extern-plugin-dir $(pwd)/plugin-libs/
 rc=$?
 
 if [ -n "$OUTPUT_LOGS_ON_FAILURE" ]; then

@@ -1,6 +1,7 @@
 import argparse
 import os
 import psutil
+import shutil
 import time
 
 
@@ -88,8 +89,7 @@ parser.add_argument(
     action="append",
     type=directory,
     help="directory containing test files "
-    "(may be specified multiple times) "
-    "(VPP_WS_DIR/test is added automatically to the set)",
+    "(may be specified multiple times)",
 )
 
 default_verbose = 0
@@ -251,9 +251,8 @@ parser.add_argument(
 parser.add_argument(
     "--vpp-ws-dir",
     action="store",
-    required=True,
     type=directory,
-    help="vpp workspace directory",
+    help="vpp workspace directory (default: use system-installed vpp)",
 )
 
 parser.add_argument(
@@ -261,21 +260,22 @@ parser.add_argument(
     action="store",
     default="vpp_debug",
     metavar="VPP_TAG",
-    required=True,
-    help="vpp tag (e.g. vpp, vpp_debug, vpp_gcov)",
+    help="vpp tag (e.g. vpp, vpp_debug, vpp_gcov), used with VPP_WS_DIR "
+    "(default: vpp_debug)",
 )
 
 parser.add_argument(
     "--vpp",
     action="store",
-    help="path to vpp binary (default: derive from VPP_WS_DIR and VPP_TAG)",
+    help="path to vpp binary (default: derive from VPP_WS_DIR and VPP_TAG, "
+    "or vpp in PATH if VPP_WS_DIR not given)",
 )
 
 parser.add_argument(
     "--vpp-install-dir",
     type=directory,
     action="store",
-    help="path to vpp install directory"
+    help="path to vpp install directory "
     "(default: derive from VPP_WS_DIR and VPP_TAG)",
 )
 
@@ -420,29 +420,44 @@ parser.add_argument(
 config = parser.parse_args()
 
 ws = config.vpp_ws_dir
-br = f"{ws}/build-root"
 tag = config.vpp_tag
 
-if config.vpp_install_dir is None:
-    config.vpp_install_dir = f"{br}/install-{tag}-native"
+if ws is not None:
+    br = f"{ws}/build-root"
+
+    if config.vpp_install_dir is None:
+        config.vpp_install_dir = f"{br}/install-{tag}-native"
+
+    if config.vpp_build_dir is None:
+        config.vpp_build_dir = f"{br}/build-{tag}-native"
 
 if config.vpp is None:
-    config.vpp = f"{config.vpp_install_dir}/vpp/bin/vpp"
-
-if config.vpp_build_dir is None:
-    config.vpp_build_dir = f"{br}/build-{tag}-native"
+    if config.vpp_install_dir is not None:
+        config.vpp = f"{config.vpp_install_dir}/vpp/bin/vpp"
+    else:
+        config.vpp = shutil.which("vpp")
+        if config.vpp is None:
+            parser.error(
+                "vpp not found in PATH; specify --vpp-ws-dir, --vpp-install-dir or --vpp"
+            )
 
 libs = ["lib", "lib64"]
 
 if config.vpp_plugin_dir is None:
-    config.vpp_plugin_dir = [
-        f"{config.vpp_install_dir}/vpp/{lib}/vpp_plugins" for lib in libs
-    ]
+    if config.vpp_install_dir is not None:
+        config.vpp_plugin_dir = [
+            f"{config.vpp_install_dir}/vpp/{lib}/vpp_plugins" for lib in libs
+        ]
+    else:
+        config.vpp_plugin_dir = []
 
 if config.vpp_test_plugin_dir is None:
-    config.vpp_test_plugin_dir = [
-        f"{config.vpp_install_dir}/vpp/{lib}/vpp_api_test_plugins" for lib in libs
-    ]
+    if config.vpp_install_dir is not None:
+        config.vpp_test_plugin_dir = [
+            f"{config.vpp_install_dir}/vpp/{lib}/vpp_api_test_plugins" for lib in libs
+        ]
+    else:
+        config.vpp_test_plugin_dir = []
 
 test_dirs = [os.getcwd()]
 
@@ -452,7 +467,7 @@ if config.test_src_dir is not None:
 config.test_src_dir = test_dirs
 
 
-if config.venv_dir is None:
+if config.venv_dir is None and ws is not None:
     config.venv_dir = f"{ws}/build-root/test/venv"
 
 if config.failed_dir is None:
