@@ -700,6 +700,18 @@ class IntegrationTestCase(IntegrationTestBase):
         self.assertEqual(reply.fixed, "Goodbye World!".ljust(64))
         self.assertEqual(reply.variable, "Goodbye World!")
 
+    def test_api_string_in_type(self):
+        """API using a type containing a string"""
+        self.vapi.api(
+            self.vapi.papi.test_string_in_type,
+            {
+                'field': {
+                    'id': 42,
+                    'name': 'Hello World!',
+                }
+            },
+        )
+
     def test_api_enumflag(self):
         """API using enumflag"""
         test_dir = VppEnum.vl_api_test_dir_t
