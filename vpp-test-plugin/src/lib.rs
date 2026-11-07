@@ -630,7 +630,7 @@ fn message_test_command(
     let mut message = vlibapi::Message::<[u8; 256]>::new_uninit();
     unsafe {
         for i in 0..256 {
-            *(message.as_mut_ptr().add(i) as *mut u8) = 0;
+            *(message.as_mut_ptr() as *mut u8).add(i) = 0;
         }
         let message = message.assume_init();
         if *message != [0u8; 256] {
