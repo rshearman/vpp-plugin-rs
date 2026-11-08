@@ -204,4 +204,10 @@ counters test_process {
     units "packets";
     description "Deny policy updates";
   };
+  unused {
+    severity warn;
+    type counter64;
+    units "packets";
+    description "Never incremented, ensures warn severity is supported";
+  };
 };
