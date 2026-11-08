@@ -5,6 +5,7 @@ on: [push, pull_request]
 env:
   rust_stable: stable
   rust_clippy: '1.99.1'
+  rust_nightly: nightly-2026-11-05
   vpp: '26.06'
   CCACHE_DIR: ${{ github.workspace }}/.ccache
 
@@ -76,11 +77,61 @@ jobs:
           git clone --depth 1 -b v${{ env.vpp }} https://gerrit.fd.io/r/vpp
           cd vpp
           make install-dep
-          make pkg-deb
+          make pkg-deb-debug
           sudo dpkg -i build-root/*.deb
       - name: Run unit tests
         run: cargo test --workspace
+        env:
+          CLIB_DEBUG: 1
       - name: Run integration tests
         run: tests/run
         env:
           OUTPUT_LOGS_ON_FAILURE: 1
+
+  tests-nightly:
+    name: Run tests with nightly Rust (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # It's useful to know all of the failures up front in case they are different between the
+      # variants
+      fail-fast: false
+      matrix:
+        runner: ['ubuntu-24.04']
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust ${{ env.rust_nightly }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.rust_nightly }}
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: vpp-asan-${{ env.vpp }}-${{ matrix.runner }}
+      - name: Install vpp ${{ env.vpp }}
+        run: |
+          export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
+          srcdir="$(pwd)"
+          mkdir /tmp/build
+          cd /tmp/build
+          git clone --depth 1 -b v${{ env.vpp }} https://gerrit.fd.io/r/vpp
+          cd vpp
+          make install-dep
+          make pkg-deb-debug VPP_EXTRA_CMAKE_ARGS=-DVPP_ENABLE_SANITIZE_ADDR=ON
+          sudo dpkg -i build-root/*.deb
+      - name: Run unit tests with ASAN
+        # Doctests for proc-macro crates are built for the host without RUSTDOCFLAGS applied, and
+        # so without ASAN, which means they fail to load ASAN-enabled vpp libraries. The
+        # proc-macro crate only has doctests, so exclude it.
+        run: cargo test --workspace --exclude vpp-plugin-macros -Zbuild-std --target x86_64-unknown-linux-gnu
+        env:
+          RUSTFLAGS: -Z sanitizer=address
+          RUSTDOCFLAGS: -Z sanitizer=address
+          ASAN_OPTIONS: poison_history_size=128
+          CLIB_DEBUG: 1
+      - name: Run integration tests
+        run: tests/run --asan
+        env:
+          OUTPUT_LOGS_ON_FAILURE: 1
+          ASAN_OPTIONS: poison_history_size=128

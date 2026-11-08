@@ -630,7 +630,7 @@ fn message_test_command(
     let mut message = vlibapi::Message::<[u8; 256]>::new_uninit();
     unsafe {
         for i in 0..256 {
-            *(message.as_mut_ptr().add(i) as *mut u8) = 0;
+            *(message.as_mut_ptr() as *mut u8).add(i) = 0;
         }
         let message = message.assume_init();
         if *message != [0u8; 256] {
@@ -1042,7 +1042,12 @@ impl test_api::Handlers for ApiHandler {
         _vm: &vlib::BarrierHeldMainRef,
         mp: &test_api::TestString,
     ) -> Result<vlibapi::Message<test_api::TestStringReply>, i32> {
-        println!("test_string({:?})", mp);
+        let debug = format!("{:?}", mp);
+        println!("test_string({})", debug);
+        // The string must be formatted in place, since a copy wouldn't contain its contents
+        if !debug.ends_with(", variable: \"Hello World!\" }") {
+            return Err(VNET_ERR_INVALID_ARGUMENT.into());
+        }
         if mp.fixed.to_string_lossy() != format!("{:<63}", "Hello World!") {
             return Err(VNET_ERR_INVALID_ARGUMENT.into());
         }
@@ -1067,6 +1072,23 @@ impl test_api::Handlers for ApiHandler {
         reply.fixed.copy_from_str(&format!("{:<64}", reply_str));
         reply.variable.copy_from_str(reply_str);
         Ok(reply)
+    }
+
+    unsafe fn test_string_in_type(
+        _vm: &vlib::BarrierHeldMainRef,
+        mp: &test_api::TestStringInType,
+    ) -> Result<vlibapi::Message<test_api::TestStringInTypeReply>, i32> {
+        let debug = format!("{:?}", mp);
+        println!("test_string_in_type({})", debug);
+        // The string must be formatted in place, since a copy wouldn't contain its contents
+        if !debug.ends_with(", field: TestStringTypedef { id: 42, name: \"Hello World!\" } }") {
+            return Err(VNET_ERR_INVALID_ARGUMENT.into());
+        }
+        let id = mp.field.id;
+        if id != 42 || mp.field.name.to_str() != Ok("Hello World!") {
+            return Err(VNET_ERR_INVALID_ARGUMENT.into());
+        }
+        Ok(Default::default())
     }
 
     fn test_enumflag(
