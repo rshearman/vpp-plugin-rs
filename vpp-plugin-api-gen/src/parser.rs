@@ -148,6 +148,31 @@ fn crc_data_for_enum_block_statements(block_statements: &[EnumStatement]) -> Str
     format!("[{}]", crc_data_vec.join(", "))
 }
 
+/// Check that variants marked as backwards_compatible only appear at the end of the enum
+///
+/// Since otherwise the values of non-backwards_compatible variants may have changed.
+fn check_enum_backwards_compatible_last(
+    name: &str,
+    block_statements: &[EnumStatement],
+) -> Result<(), Error> {
+    let mut seen_backwards_compatible = false;
+    for s in block_statements {
+        match s {
+            EnumStatement::Variant { id, options, .. } => {
+                if options.iter().any(|o| o.option == "backwards_compatible") {
+                    seen_backwards_compatible = true;
+                } else if seen_backwards_compatible {
+                    return Err(Error::BackwardsCompatibleEnumVariantNotLast(
+                        id.clone(),
+                        name.to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Statement {
     fn crc_data(&self) -> Option<String> {
         match self {
@@ -528,6 +553,10 @@ pub enum Error {
     ArrayVariableNotFound(String, String),
     #[error("String field \"{0}\" must be declared as an array")]
     StringNotArray(String),
+    #[error(
+        "Variant \"{0}\" in enum \"{1}\" follows a backwards_compatible variant, but backwards_compatible variants must be last"
+    )]
+    BackwardsCompatibleEnumVariantNotLast(String, String),
     #[error("Unable to find import \"{import}\" in include directories {include_dirs:?}")]
     ImportNotFound {
         import: String,
@@ -1127,6 +1156,7 @@ impl ApiParser {
                     size,
                     block_statements,
                 } => {
+                    check_enum_backwards_compatible_last(&name, &block_statements)?;
                     let mut crc = crc32fast::Hasher::new();
                     crc.update(crc_data_for_enum_block_statements(&block_statements).as_bytes());
                     let variants = enum_variants_from_block_statements(&block_statements);
@@ -1152,6 +1182,7 @@ impl ApiParser {
                     size,
                     block_statements,
                 } => {
+                    check_enum_backwards_compatible_last(&name, &block_statements)?;
                     let mut crc = crc32fast::Hasher::new();
                     crc.update(crc_data_for_enum_block_statements(&block_statements).as_bytes());
                     let variants = enum_variants_from_block_statements(&block_statements);
@@ -2026,6 +2057,15 @@ mod tests {
         assert_eq!(
             parse_file_expect_error("tests/string_not_array.api").to_string(),
             "String field \"s\" must be declared as an array"
+        );
+    }
+
+    #[test]
+    fn backwards_compatible_enum_variant_not_last() {
+        assert_eq!(
+            parse_file_expect_error("tests/backwards_compatible_enum_variant_not_last.api")
+                .to_string(),
+            "Variant \"TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_COPY_DF\" in enum \"tunnel_encap_decap_flags\" follows a backwards_compatible variant, but backwards_compatible variants must be last"
         );
     }
 
