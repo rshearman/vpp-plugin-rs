@@ -342,7 +342,7 @@ struct ErrorCounterAttribute {
 
 impl syn::parse::Parse for ErrorCounterAttribute {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        const VALID_SEVERITIES: &[&str] = &["INFO", "WARNING", "ERROR", "CRITICAL"];
+        const VALID_SEVERITIES: &[&str] = &["INFO", "WARN", "ERROR"];
 
         let mut name_or_description_kw = syn::Ident::parse(input)?;
 
@@ -407,7 +407,7 @@ impl syn::parse::Parse for ErrorCounterAttribute {
 /// - `name = "<name>"`: (optional) The name of the error counter. If not provided, the variant name will be used.
 /// - `description = "<description>"`: (required) A description of the error counter
 /// - `severity = <severity>`: (required) The severity of the error counter. Must be one of
-///   `INFO`, `WARNING`, `ERROR`, or `CRITICAL`.
+///   `INFO`, `WARN`, or `ERROR`.
 ///
 /// # Examples
 ///

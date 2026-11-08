@@ -1145,6 +1145,11 @@ enum TestProcessNextNode {
     Ip4Lookup,
 }
 
+// The `unused` counter only exists to check that a `warn` severity in the API file compiles, so
+// nothing increments it. Use it here to keep the dead_code lint quiet without disabling the lint
+// for the other counters.
+const _: TestProcessErrorCounter = TestProcessErrorCounter::Unused;
+
 #[vlib_process_node(
     name = "test-process",
     instance = TEST_PROCESS_NODE,
