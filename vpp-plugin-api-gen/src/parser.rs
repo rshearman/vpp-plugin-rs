@@ -352,7 +352,6 @@ pub enum Flag {
     DontTrace,
     AutoEndian,
     AutoReply,
-    IndexReply,
 }
 
 peg::parser! {
@@ -506,7 +505,6 @@ peg::parser! {
             / _ "dont_trace" { Flag::DontTrace }
             / _ "autoendian" { Flag::AutoEndian }
             / _ "autoreply" { Flag::AutoReply }
-            / _ "indexreply" { Flag::IndexReply }
     }
 }
 
@@ -699,11 +697,8 @@ impl Message {
     }
 
     fn generated_reply(&self) -> Option<Self> {
-        let auto_reply = self.auto_reply();
-        let index_reply = self.index_reply();
-
-        if auto_reply || index_reply {
-            let mut auto_fields = vec![
+        if self.auto_reply() {
+            let auto_fields = vec![
                 Field {
                     r#type: "u16".to_string(),
                     name: "_vl_msg_id".to_string(),
@@ -723,14 +718,6 @@ impl Message {
                     size: None,
                 },
             ];
-            if !auto_reply {
-                auto_fields.push(Field {
-                    r#type: "u32".to_string(),
-                    name: "index".to_string(),
-                    options: vec![],
-                    size: None,
-                });
-            }
 
             let mut crc_hash = crc32fast::Hasher::new();
             // crc doesn't include _vl_msg_id field
@@ -751,10 +738,6 @@ impl Message {
 
     fn auto_reply(&self) -> bool {
         self.flags.contains(&Flag::AutoReply)
-    }
-
-    fn index_reply(&self) -> bool {
-        self.flags.contains(&Flag::IndexReply)
     }
 
     pub fn auto_endian(&self) -> bool {
