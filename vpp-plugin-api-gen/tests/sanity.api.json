@@ -853,5 +853,24 @@
             ]
         }
     ],
-    "paths": []
+    "paths": [
+        [
+            {
+                "path": "/err/tcp-mss-clamping-ip4-in",
+                "counter": "mss-clamp"
+            },
+            {
+                "path": "/err/tcp-mss-clamping-ip4-out",
+                "counter": "mss-clamp"
+            },
+            {
+                "path": "/err/tcp-mss-clamping-ip6-in",
+                "counter": "mss-clamp"
+            },
+            {
+                "path": "/err/tcp-mss-clamping-ip6-out",
+                "counter": "mss-clamp"
+            }
+        ]
+    ]
 }

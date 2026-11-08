@@ -7,8 +7,8 @@ use serde::{
 };
 
 use crate::parser::{
-    ApiParser, CheckedCounterElement, CheckedCounters, EnumVariant, Field, FieldSize, Message,
-    OptionStatement, Service, TypeDetails, TypeEntry,
+    ApiParser, CheckedCounterElement, CheckedCounters, CounterPath, EnumVariant, Field, FieldSize,
+    Message, OptionStatement, Service, TypeDetails, TypeEntry,
 };
 
 #[derive(Debug, Serialize)]
@@ -24,7 +24,7 @@ struct ApiFile<'a> {
     vl_api_version: String,
     imports: &'a [String],
     counters: &'a [CheckedCounters],
-    paths: &'a [()],
+    paths: &'a [Vec<CounterPath>],
 }
 
 #[derive(Debug, Serialize)]
@@ -261,6 +261,18 @@ impl Serialize for CheckedCounterElement {
     }
 }
 
+impl Serialize for CounterPath {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("path", self.path())?;
+        map.serialize_entry("counter", self.counter())?;
+        map.end()
+    }
+}
+
 pub(crate) fn generate_json(parser: &ApiParser) -> Result<String, serde_json::Error> {
     let services = parser
         .services()
@@ -329,7 +341,7 @@ pub(crate) fn generate_json(parser: &ApiParser) -> Result<String, serde_json::Er
         vl_api_version: format!("0x{:08x}", parser.file_crc()),
         imports: parser.imports(),
         counters: parser.counters(),
-        paths: &[],
+        paths: parser.paths(),
     };
     serde_json::to_string_pretty(&api_file)
 }
