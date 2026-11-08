@@ -1,0 +1,25 @@
+option version = "1.0.0";
+
+/* A message that doesn't return doesn't need client_index or context */
+autoendian define no_return {
+    u8 dummy;
+};
+
+/* Handler sends the details itself, so context is up to the handler */
+autoendian define widget_dump {
+    u32 client_index;
+};
+
+autoendian define widget_details {
+    u32 id;
+};
+
+autoendian autoreply define create {
+    u32 client_index;
+    u32 context;
+};
+
+service {
+    rpc no_return returns null;
+    rpc widget_dump returns stream widget_details;
+};

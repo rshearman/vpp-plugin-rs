@@ -84,6 +84,18 @@ pub enum Error {
     /// Attempt to use functionality that isn't yet implemented
     #[error("{0}")]
     Unimplemented(String),
+    /// A message used in a service is missing a field required by the generated handler
+    #[error(
+        "Message \"{message}\" used in service for \"{service}\" is missing required field \"u32 {field}\""
+    )]
+    ServiceMessageMissingField {
+        /// Name of the service caller message
+        service: String,
+        /// Name of the message missing the field (either the caller or reply message)
+        message: String,
+        /// Name of the missing field
+        field: &'static str,
+    },
 }
 
 fn to_upper_camel_case(s: &str) -> String {
@@ -1267,8 +1279,6 @@ impl ApiGenContext<'_> {
                     self.output_file,
                     "        ::vpp_plugin::vlibapi::registration_scope(|s| {{"
                 )?;
-                // TODO: check for client_index field in caller
-                // TODO: check for context field in caller and reply
                 writeln!(
                     self.output_file,
                     "            if let Some(reg) = s.from_client_index(vm, mp.client_index) {{"
@@ -1632,7 +1642,44 @@ impl ApiGenContext<'_> {
         Ok(())
     }
 
+    /// Check that service messages have the fields that the generated handlers rely on
+    ///
+    /// vppapigen doesn't enforce these, but generated handlers that reply need `client_index`
+    /// in the caller to find the registration and, unless the reply is a stream of messages
+    /// sent by the handler, `context` in both the caller and the reply.
+    fn check_services(&self) -> Result<(), Error> {
+        let require_field = |service: &str, message: &str, field: &'static str| {
+            let has_field = self
+                .parser
+                .message(message)
+                .is_some_and(|m| m.has_scalar_field(field, "u32"));
+            if has_field {
+                Ok(())
+            } else {
+                Err(Error::ServiceMessageMissingField {
+                    service: service.to_string(),
+                    message: message.to_string(),
+                    field,
+                })
+            }
+        };
+
+        for service in self.parser.services() {
+            if service.reply() == "null" {
+                continue;
+            }
+            require_field(service.caller(), service.caller(), "client_index")?;
+            if !service.stream() || service.stream_message().is_some() {
+                require_field(service.caller(), service.caller(), "context")?;
+                require_field(service.caller(), service.reply(), "context")?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn generate(mut self) -> Result<(), Error> {
+        self.check_services()?;
         self.output_json_file
             .write_all(generate_json(self.parser)?.as_bytes())?;
         self.generate_aliases()?;
@@ -1643,5 +1690,63 @@ impl ApiGenContext<'_> {
         self.generate_register()?;
         self.generate_counters()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Generate code for an API file in the tests directory
+    fn generate_file(filename: &str) -> Result<(), Error> {
+        let output_dir = env::temp_dir().join(format!(
+            "vpp-plugin-api-gen-test-{}-{}",
+            std::process::id(),
+            Path::new(filename).file_stem().unwrap().to_string_lossy()
+        ));
+        let result = Builder::new(
+            &format!("{}/{}", env!("CARGO_MANIFEST_DIR"), filename),
+            &output_dir.to_string_lossy(),
+        )
+        .and_then(Builder::generate);
+        let _ = std::fs::remove_dir_all(&output_dir);
+        result
+    }
+
+    /// Generate code for an API file and expect an error, returning that error
+    fn generate_file_expect_error(filename: &str) -> Error {
+        match generate_file(filename) {
+            Ok(()) => panic!("unexpectedly generated {} successfully", filename),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn service_fields() {
+        generate_file("tests/service_fields.api").unwrap();
+    }
+
+    #[test]
+    fn service_caller_missing_client_index() {
+        assert_eq!(
+            generate_file_expect_error("tests/service_caller_missing_client_index.api").to_string(),
+            "Message \"create\" used in service for \"create\" is missing required field \"u32 client_index\""
+        );
+    }
+
+    #[test]
+    fn service_caller_missing_context() {
+        assert_eq!(
+            generate_file_expect_error("tests/service_caller_missing_context.api").to_string(),
+            "Message \"create\" used in service for \"create\" is missing required field \"u32 context\""
+        );
+    }
+
+    #[test]
+    fn service_reply_missing_context() {
+        assert_eq!(
+            generate_file_expect_error("tests/service_reply_missing_context.api").to_string(),
+            "Message \"create_reply\" used in service for \"create\" is missing required field \"u32 context\""
+        );
     }
 }

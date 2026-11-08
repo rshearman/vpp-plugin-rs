@@ -912,10 +912,15 @@ impl Message {
         &self.fields
     }
 
-    pub fn has_retval(&self) -> bool {
+    /// Returns true if the message has a non-array field with the given name and type
+    pub fn has_scalar_field(&self, name: &str, r#type: &str) -> bool {
         self.fields
             .iter()
-            .any(|field| field.name == "retval" && field.r#type == "i32" && field.size.is_none())
+            .any(|field| field.name == name && field.r#type == r#type && field.size.is_none())
+    }
+
+    pub fn has_retval(&self) -> bool {
+        self.has_scalar_field("retval", "i32")
     }
 
     pub fn comment(&self) -> Option<&str> {
