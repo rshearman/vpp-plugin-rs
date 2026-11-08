@@ -201,3 +201,9 @@ counters mss_clamp {
     description "packets clamped";
   };
 };
+paths {
+  "/err/tcp-mss-clamping-ip4-in" "mss-clamp";
+  "/err/tcp-mss-clamping-ip4-out" "mss-clamp";
+  "/err/tcp-mss-clamping-ip6-in" "mss-clamp";
+  "/err/tcp-mss-clamping-ip6-out" "mss-clamp";
+};

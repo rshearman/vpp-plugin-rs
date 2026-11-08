@@ -6,7 +6,7 @@ typedef include_dir_type {
     vl_api_include_dir_type2_t inner;
 };
 
-/* Counters in imported files are ignored */
+/* Counters and paths in imported files are ignored */
 counters include_dir {
   imported {
     severity info;
@@ -14,4 +14,7 @@ counters include_dir {
     units "packets";
     description "Imported counter";
   };
+};
+paths {
+  "/err/include-dir" "include_dir";
 };
