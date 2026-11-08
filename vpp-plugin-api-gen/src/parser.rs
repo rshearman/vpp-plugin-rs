@@ -47,6 +47,7 @@ pub enum Statement {
     },
     Import(String),
     Service(Vec<Service>),
+    Counters(Counters),
 }
 
 fn options_from_block_statements(block_statements: &[BlockStatement]) -> Vec<OptionStatement> {
@@ -190,7 +191,7 @@ impl Statement {
             Self::EnumFlag {
                 block_statements, ..
             } => Some(crc_data_for_enum_block_statements(block_statements)),
-            Self::Import(_) | Self::Service(_) => None,
+            Self::Import(_) | Self::Service(_) | Self::Counters(_) => None,
         }
     }
 }
@@ -354,6 +355,101 @@ pub enum Flag {
     AutoReply,
 }
 
+#[derive(Debug, Clone)]
+pub struct Counters {
+    id: String,
+    elements: Vec<CounterElement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CounterElement {
+    id: String,
+    statements: Vec<CounterStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CounterStatement {
+    Severity(String),
+    Units(String),
+    Description(String),
+    Type(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckedCounters {
+    name: String,
+    elements: Vec<CheckedCounterElement>,
+}
+
+impl CheckedCounters {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn elements(&self) -> &[CheckedCounterElement] {
+        &self.elements
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckedCounterElement {
+    id: String,
+    severity: String,
+    r#type: String,
+    units: String,
+    description: String,
+}
+
+impl CheckedCounterElement {
+    pub fn name(&self) -> &str {
+        &self.id
+    }
+
+    pub fn severity(&self) -> &str {
+        &self.severity
+    }
+
+    pub fn r#type(&self) -> &str {
+        &self.r#type
+    }
+
+    pub fn units(&self) -> &str {
+        &self.units
+    }
+
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+impl TryFrom<CounterElement> for CheckedCounterElement {
+    type Error = Error;
+
+    fn try_from(e: CounterElement) -> Result<Self, Error> {
+        let mut severity = None;
+        let mut r#type = None;
+        let mut units = None;
+        let mut description = None;
+        for stmt in e.statements {
+            match stmt {
+                CounterStatement::Severity(stmt_severity) => severity = Some(stmt_severity),
+                CounterStatement::Units(stmt_units) => units = Some(stmt_units),
+                CounterStatement::Description(stmt_description) => {
+                    description = Some(stmt_description)
+                }
+                CounterStatement::Type(stmt_type) => r#type = Some(stmt_type),
+            }
+        }
+        Ok(Self {
+            id: e.id.clone(),
+            severity: severity.ok_or(Error::MissingCounterSeverity(e.id.clone()))?,
+            r#type: r#type.ok_or(Error::MissingCounterType(e.id.clone()))?,
+            units: units.ok_or(Error::MissingCounterUnits(e.id.clone()))?,
+            description: description.ok_or(Error::MissingCounterDescription(e.id))?,
+        })
+    }
+}
+
 peg::parser! {
     grammar api_parser() for str {
         pub rule statement_list() -> Vec<Statement>
@@ -369,7 +465,7 @@ peg::parser! {
             / union()
             / service()
             // / paths()
-            // / counters()
+            / counters()
 
         rule define() -> Statement
             = c:comment() ___ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, vec![], Some(c)) }
@@ -505,6 +601,24 @@ peg::parser! {
             / _ "dont_trace" { Flag::DontTrace }
             / _ "autoendian" { Flag::AutoEndian }
             / _ "autoreply" { Flag::AutoReply }
+
+        rule counters() -> Statement
+            = _ "counters" _ id:identifier() _ "{" e:counter_elements() _ "}" _ ";" { Statement::Counters(Counters { id, elements: e }) }
+
+        rule counter_elements() -> Vec<CounterElement>
+            = e:(counter_element()+) { e }
+
+        rule counter_element() -> CounterElement
+            = _ id:identifier() _ "{" s:counter_statements() _ "}" _ ";" { CounterElement { id, statements: s } }
+
+        rule counter_statements() -> Vec<CounterStatement>
+            = s:(counter_statement()+) { s }
+
+        rule counter_statement() -> CounterStatement
+            = _ "severity" _ sev:identifier() _ ";" { CounterStatement::Severity(sev) }
+            / _ "units" _ s:string_literal() _ ";" { CounterStatement::Units(s) }
+            / _ "description" _ s:string_literal() _ ";" { CounterStatement::Description(s) }
+            / _ "type" _ t:identifier() _ ";" { CounterStatement::Type(t) }
     }
 }
 
@@ -560,6 +674,14 @@ pub enum Error {
         import: String,
         include_dirs: Vec<PathBuf>,
     },
+    #[error("Missing description for counter {0}")]
+    MissingCounterDescription(String),
+    #[error("Missing severity for counter {0}")]
+    MissingCounterSeverity(String),
+    #[error("Missing type for counter {0}")]
+    MissingCounterType(String),
+    #[error("Missing units for counter {0}")]
+    MissingCounterUnits(String),
 }
 
 fn parse_file(filename: &Path) -> Result<Vec<Statement>, Error> {
@@ -905,6 +1027,7 @@ pub struct ApiParser {
     types: Vec<Type>,
     enums: Vec<Enum>,
     enumflags: Vec<Enum>,
+    counters: Vec<CheckedCounters>,
 
     file_crc: u32,
 }
@@ -1204,6 +1327,20 @@ impl ApiParser {
                     }
                     continue;
                 }
+                // As per vppapigen, counters in imported files are ignored
+                Statement::Counters(counters) => {
+                    if import.is_none() {
+                        self.counters.push(CheckedCounters {
+                            name: counters.id,
+                            elements: counters
+                                .elements
+                                .into_iter()
+                                .map(CheckedCounterElement::try_from)
+                                .collect::<Result<Vec<_>, Error>>()?,
+                        });
+                    }
+                    continue;
+                }
             };
             let type_entry = Arc::new(t);
 
@@ -1408,6 +1545,10 @@ impl ApiParser {
             .ok_or_else(|| Error::TypeResolution {
                 type_name: r#type.to_string(),
             })
+    }
+
+    pub fn counters(&self) -> &[CheckedCounters] {
+        &self.counters
     }
 }
 
@@ -2151,6 +2292,9 @@ mod tests {
             panic!("include_dir_type2 is not a typedef block");
         };
         assert_eq!(fields[0].r#type, "u32");
+
+        // As per vppapigen, counters in imported files are ignored
+        assert!(api.counters().is_empty());
     }
 
     #[test]

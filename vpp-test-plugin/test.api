@@ -190,3 +190,18 @@ service {
   rpc test_stream_get returns test_stream_get_reply
     stream test_stream_details;
 };
+
+counters test_process {
+  buffer_allocation {
+    severity error;
+    type counter64;
+    units "packets";
+    description "Buffer allocation";
+  };
+  deny_policy_updated {
+    severity info;
+    type counter64;
+    units "packets";
+    description "Deny policy updates";
+  };
+};

@@ -41,6 +41,7 @@ use vpp_plugin::{
     vppinfra::{error::ErrorStack, unlikely},
 };
 
+use crate::test_api::TestProcessErrorCounter;
 use crate::test_types_api::{
     TEST_ADDRESS_IP4, TEST_ADDRESS_IP6, TEST_NODE_TYPE_X1, TEST_NODE_TYPE_X4, TestAddressUnion,
     TestIp4Address,
@@ -1142,14 +1143,6 @@ type GetOnceProcessMessageReceiver = Mutex<Option<Receiver<ProcessMessage>>>;
 enum TestProcessNextNode {
     #[next_node = "ip4-lookup"]
     Ip4Lookup,
-}
-
-#[derive(ErrorCounters)]
-enum TestProcessErrorCounter {
-    #[error_counter(description = "Buffer allocation", severity = ERROR)]
-    BufferAllocation,
-    #[error_counter(description = "Deny policy updates", severity = INFO)]
-    DenyPolicyUpdated,
 }
 
 #[vlib_process_node(
