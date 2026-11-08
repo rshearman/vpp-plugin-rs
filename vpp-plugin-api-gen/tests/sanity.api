@@ -173,6 +173,18 @@ autoendian autoreply define str_request {
     string s1[];
 };
 
+enum tunnel_encap_decap_flags : u8 {
+    TUNNEL_API_ENCAP_DECAP_FLAG_NONE = 0,
+    TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_COPY_DF = 0x1,
+    TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_INNER_HASH = 0x20 [backwards_compatible],
+};
+
+autoreply define set_tunnel_encap_decap_flags {
+    u32 client_index;
+    u32 context;
+    vl_api_tunnel_encap_decap_flags_t flags;
+};
+
 service {
     rpc no_return returns null;
     rpc want_interface_events returns want_interface_events_reply

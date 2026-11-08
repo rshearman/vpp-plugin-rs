@@ -363,8 +363,11 @@ peg::parser! {
         rule ___ = [' ' | '\t' | '\n' | '\r']*
 
         rule identifier() -> String
-            = id:$(quiet!{['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '_' | '0'..='9']*}) { id.to_string() }
+            = id:$(quiet!{['a'..='z' | 'A'..='Z' | '_'] identifier_char()*}) { id.to_string() }
             / expected!("identifier")
+
+        rule identifier_char()
+            = ['a'..='z' | 'A'..='Z' | '_' | '0'..='9']
 
         rule block_statements() -> Vec<BlockStatement>
             = s:(block_statement()+) { s }
@@ -375,10 +378,13 @@ peg::parser! {
 
         rule declaration() -> Field
             = _ t:identifier() __ n:identifier() _ ";" { Field { r#type: t, name: n, options: vec![], size: None } }
-            / _ t:identifier() __ n:identifier() _ "[" _ o:field_options() _ "]" _ ";" { Field { r#type: t, name: n, options: o, size: None } }
             / _ t:identifier() __ n:identifier() _ "[" _ "]" _ ";" { Field { r#type: t, name: n, options: vec![], size: Some(FieldSize::Variable(None)) } }
             / _ t:identifier() __ name:identifier() _ "[" _ n:number() _ "]" _ ";" { Field { r#type: t, name, options: vec![], size: Some(FieldSize::Fixed(n)) } }
+            // A single identifier in brackets is ambiguous between a VLA length field and a
+            // single option. As per vppapigen, treat it as a VLA, so this must come before
+            // the field_options alternative.
             / _ t:identifier() __ n:identifier() _ "[" _ vla:identifier() _ "]" _ ";" { Field { r#type: t, name: n, options: vec![], size: Some(FieldSize::Variable(Some(vla))) } }
+            / _ t:identifier() __ n:identifier() _ "[" _ o:field_options() _ "]" _ ";" { Field { r#type: t, name: n, options: o, size: None } }
 
         rule number() -> u32
             = "0x" n:$((['0'..='9' | 'a'..='f' | 'A'..='F'])+) {? u32::from_str_radix(n, 16).or(Err("u32")) }
@@ -388,19 +394,25 @@ peg::parser! {
             = _ "option" __ o:identifier() _ ";" { OptionStatement { option: o, value: None } }
             / _ "option" __ o:identifier() _ "=" _ v:option_value() _ ";" { OptionStatement { option: o, value: Some(v) } }
 
+        // Keywords must not be followed by an identifier character, otherwise "x=true_value"
+        // in a field option list would be parsed as the options "x=true" and "_value".
         rule option_value() -> String
-            = "true" { "true".to_string() }
-            / "false" { "false".to_string() }
+            = "true" !identifier_char() { "true".to_string() }
+            / "false" !identifier_char() { "false".to_string() }
             / string_literal()
 
         rule string_literal() -> String
             = "\"" s:$("\\\"" / [^'"'])* "\"" { s.into_iter().collect() }
 
+        // As per vppapigen, options are separated by whitespace, with an optional trailing
+        // comma only allowed after an option with a value, e.g. "[a=true, b]" or "[a b]",
+        // but not "[a, b]".
         rule field_options() -> Vec<OptionStatement>
-            = field_option() ++ ","
+            = field_option()+
 
         rule field_option() -> OptionStatement
-            = _ o:identifier() _ "=" _ v:option_value() { OptionStatement { option: o, value: Some(v) } }
+            = _ o:identifier() _ "=" _ v:option_value() (_ ",")? { OptionStatement { option: o, value: Some(v) } }
+            / _ o:identifier() { OptionStatement { option: o, value: None } }
 
         rule comment() -> String
             = ___ c:$(quiet!{"/*"} (!"*/"[_])* "*/") { c.to_string() }
@@ -1387,7 +1399,9 @@ impl ApiParser {
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::{ApiParser, Error, FieldSize, OptionStatement, TypeDetails};
+    use crate::parser::{
+        ApiParser, Error, FieldSize, OptionStatement, Statement, TypeDetails, api_parser,
+    };
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -1800,6 +1814,8 @@ mod tests {
                 ("flags_reply", 0xe8d4e804),
                 ("str_request", 0xd170b6e7),
                 ("str_request_reply", 0xe8d4e804),
+                ("set_tunnel_encap_decap_flags", 0xbbc4c786),
+                ("set_tunnel_encap_decap_flags_reply", 0xe8d4e804),
             ]
         );
 
@@ -1841,10 +1857,16 @@ mod tests {
                 ("ip_table_dump", "ip_table_details", true, None),
                 ("flags", "flags_reply", false, None),
                 ("str_request", "str_request_reply", false, None),
+                (
+                    "set_tunnel_encap_decap_flags",
+                    "set_tunnel_encap_decap_flags_reply",
+                    false,
+                    None,
+                ),
             ]
         );
 
-        assert_eq!(api.file_crc(), 0xeabe8f26);
+        assert_eq!(api.file_crc(), 0xe6f76373);
     }
 
     /// Parse a file and expect an error, returning that error
@@ -2005,6 +2027,77 @@ mod tests {
             parse_file_expect_error("tests/string_not_array.api").to_string(),
             "String field \"s\" must be declared as an array"
         );
+    }
+
+    /// Name, options and size of a field
+    type FieldSummary = (String, Vec<OptionStatement>, Option<FieldSize>);
+
+    /// Parse a typedef block from a string, returning a summary of each field
+    fn parse_typedef_fields(input: &str) -> Result<Vec<FieldSummary>, String> {
+        let statements = api_parser::statement_list(input).map_err(|e| e.to_string())?;
+        let [Statement::TypedefBlock { fields, .. }] = statements.as_slice() else {
+            panic!("expected a single typedef block, got {statements:?}");
+        };
+        Ok(fields
+            .iter()
+            .map(|f| (f.name.clone(), f.options.clone(), f.size.clone()))
+            .collect())
+    }
+
+    #[test]
+    fn field_options_syntax() {
+        let option = |option: &str, value: Option<&str>| OptionStatement {
+            option: option.to_string(),
+            value: value.map(|v| v.to_string()),
+        };
+
+        let fields = parse_typedef_fields(
+            "typedef t {
+                u32 n;
+                u8 a[n];
+                u8 b[default=true, bar];
+                u8 c[x=false y];
+                u8 d[x y];
+            };",
+        )
+        .expect("failed to parse");
+        assert_eq!(
+            fields,
+            [
+                ("n".to_string(), vec![], None),
+                // A single identifier is a VLA length field, not an option
+                (
+                    "a".to_string(),
+                    vec![],
+                    Some(FieldSize::Variable(Some("n".to_string())))
+                ),
+                (
+                    "b".to_string(),
+                    vec![option("default", Some("true")), option("bar", None)],
+                    None
+                ),
+                (
+                    "c".to_string(),
+                    vec![option("x", Some("false")), option("y", None)],
+                    None
+                ),
+                (
+                    "d".to_string(),
+                    vec![option("x", None), option("y", None)],
+                    None
+                ),
+            ]
+        );
+
+        // As per vppapigen, a comma is only allowed after an option with a value
+        parse_typedef_fields("typedef t { u8 a[x, y]; };")
+            .expect_err("unexpectedly parsed comma after option without value");
+
+        // A keyword value must not be split from following identifier characters
+        parse_typedef_fields("typedef t { u8 a[x=true_value]; };")
+            .expect_err("unexpectedly parsed keyword prefix of identifier as value");
+        parse_typedef_fields("typedef t { u8 a[x=falsey y]; };")
+            .expect_err("unexpectedly parsed keyword prefix of identifier as value");
     }
 
     #[test]
