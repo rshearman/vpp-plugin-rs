@@ -192,3 +192,12 @@ service {
     rpc sw_interface_tx_placement_get returns sw_interface_tx_placement_get_reply
         stream sw_interface_tx_placement_details;
 };
+
+counters mss_clamp {
+  clamped {
+    severity info;
+    type counter64;
+    units "packets";
+    description "packets clamped";
+  };
+};

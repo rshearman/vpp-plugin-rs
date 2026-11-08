@@ -5,3 +5,13 @@ import "nested/include_dir_types2.api";
 typedef include_dir_type {
     vl_api_include_dir_type2_t inner;
 };
+
+/* Counters in imported files are ignored */
+counters include_dir {
+  imported {
+    severity info;
+    type counter64;
+    units "packets";
+    description "Imported counter";
+  };
+};

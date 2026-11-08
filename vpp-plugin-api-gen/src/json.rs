@@ -7,8 +7,8 @@ use serde::{
 };
 
 use crate::parser::{
-    ApiParser, EnumVariant, Field, FieldSize, Message, OptionStatement, Service, TypeDetails,
-    TypeEntry,
+    ApiParser, CheckedCounterElement, CheckedCounters, EnumVariant, Field, FieldSize, Message,
+    OptionStatement, Service, TypeDetails, TypeEntry,
 };
 
 #[derive(Debug, Serialize)]
@@ -23,7 +23,7 @@ struct ApiFile<'a> {
     aliases: IndexMap<String, JsonAlias>,
     vl_api_version: String,
     imports: &'a [String],
-    counters: &'a [()],
+    counters: &'a [CheckedCounters],
     paths: &'a [()],
 }
 
@@ -234,6 +234,33 @@ impl Serialize for EnumVariant {
     }
 }
 
+impl Serialize for CheckedCounters {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("name", self.name())?;
+        map.serialize_entry("elements", self.elements())?;
+        map.end()
+    }
+}
+
+impl Serialize for CheckedCounterElement {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(5))?;
+        map.serialize_entry("name", self.name())?;
+        map.serialize_entry("severity", self.severity())?;
+        map.serialize_entry("type", self.r#type())?;
+        map.serialize_entry("units", self.units())?;
+        map.serialize_entry("description", self.description())?;
+        map.end()
+    }
+}
+
 pub(crate) fn generate_json(parser: &ApiParser) -> Result<String, serde_json::Error> {
     let services = parser
         .services()
@@ -301,7 +328,7 @@ pub(crate) fn generate_json(parser: &ApiParser) -> Result<String, serde_json::Er
         aliases,
         vl_api_version: format!("0x{:08x}", parser.file_crc()),
         imports: parser.imports(),
-        counters: &[],
+        counters: parser.counters(),
         paths: &[],
     };
     serde_json::to_string_pretty(&api_file)
