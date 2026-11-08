@@ -839,6 +839,19 @@
     },
     "vl_api_version": "0xe6f76373",
     "imports": [],
-    "counters": [],
+    "counters": [
+        {
+            "name": "mss_clamp",
+            "elements": [
+                {
+                    "name": "clamped",
+                    "severity": "info",
+                    "type": "counter64",
+                    "units": "packets",
+                    "description": "packets clamped"
+                }
+            ]
+        }
+    ],
     "paths": []
 }

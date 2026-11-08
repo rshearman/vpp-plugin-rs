@@ -120,7 +120,7 @@ class IntegrationTestBase(VppTestCase):
 
     def barrier_rw_lock_sync(self, enable):
         """set the deny policy from the test process node, which takes the barrier itself"""
-        updated = self.statistics.get_err_counter("/err/test-process/DenyPolicyUpdated")
+        updated = self.statistics.get_err_counter("/err/test-process/deny_policy_updated")
         self.vapi.api(
             self.vapi.papi.test_barrier_rw_lock_sync,
             {
@@ -129,7 +129,7 @@ class IntegrationTestBase(VppTestCase):
         )
         # The process node applies it asynchronously, so wait for it to say it's done
         for _ in range(50):
-            if self.statistics.get_err_counter("/err/test-process/DenyPolicyUpdated") > updated:
+            if self.statistics.get_err_counter("/err/test-process/deny_policy_updated") > updated:
                 return
             sleep(0.1)
         self.fail("Process node didn't update the deny policy")

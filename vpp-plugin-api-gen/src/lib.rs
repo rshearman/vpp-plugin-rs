@@ -1607,6 +1607,31 @@ impl ApiGenContext<'_> {
         Ok(())
     }
 
+    fn generate_counters(&mut self) -> Result<(), Error> {
+        for counters in self.parser.counters() {
+            writeln!(self.output_file, "#[derive(::vpp_plugin::ErrorCounters)]")?;
+            writeln!(
+                self.output_file,
+                "pub enum {}ErrorCounter {{",
+                to_upper_camel_case(counters.name())
+            )?;
+            for e in counters.elements() {
+                let upper_camel_name = to_upper_camel_case(e.name());
+                writeln!(
+                    self.output_file,
+                    "    #[error_counter(name = \"{}\", description = \"{}\", severity = {})]",
+                    e.name(),
+                    e.description(),
+                    e.severity().to_uppercase()
+                )?;
+                writeln!(self.output_file, "    {},", upper_camel_name)?;
+            }
+            writeln!(self.output_file, "}}")?;
+        }
+
+        Ok(())
+    }
+
     fn generate(mut self) -> Result<(), Error> {
         self.output_json_file
             .write_all(generate_json(self.parser)?.as_bytes())?;
@@ -1616,6 +1641,7 @@ impl ApiGenContext<'_> {
         self.generate_types()?;
         self.generate_messages()?;
         self.generate_register()?;
+        self.generate_counters()?;
         Ok(())
     }
 }
