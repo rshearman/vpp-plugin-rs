@@ -663,6 +663,48 @@
                 "crc": "0xe8d4e804",
                 "options": {}
             }
+        ],
+        [
+            "set_tunnel_encap_decap_flags",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "vl_api_tunnel_encap_decap_flags_t",
+                "flags"
+            ],
+            {
+                "crc": "0xbbc4c786",
+                "options": {}
+            }
+        ],
+        [
+            "set_tunnel_encap_decap_flags_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {}
+            }
         ]
     ],
     "unions": [
@@ -688,6 +730,24 @@
             [
                 "ADDRESS_IP6",
                 1
+            ],
+            {
+                "enumtype": "u8"
+            }
+        ],
+        [
+            "tunnel_encap_decap_flags",
+            [
+                "TUNNEL_API_ENCAP_DECAP_FLAG_NONE",
+                0
+            ],
+            [
+                "TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_COPY_DF",
+                1
+            ],
+            [
+                "TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_INNER_HASH",
+                32
             ],
             {
                 "enumtype": "u8"
@@ -759,6 +819,9 @@
         },
         "str_request": {
             "reply": "str_request_reply"
+        },
+        "set_tunnel_encap_decap_flags": {
+            "reply": "set_tunnel_encap_decap_flags_reply"
         }
     },
     "options": {
@@ -774,7 +837,7 @@
             "length": 16
         }
     },
-    "vl_api_version": "0xeabe8f26",
+    "vl_api_version": "0xe6f76373",
     "imports": [],
     "counters": [],
     "paths": []
