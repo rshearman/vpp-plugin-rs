@@ -48,6 +48,7 @@ pub enum Statement {
     Import(String),
     Service(Vec<Service>),
     Counters(Counters),
+    Paths(Vec<CounterPath>),
 }
 
 fn options_from_block_statements(block_statements: &[BlockStatement]) -> Vec<OptionStatement> {
@@ -191,7 +192,7 @@ impl Statement {
             Self::EnumFlag {
                 block_statements, ..
             } => Some(crc_data_for_enum_block_statements(block_statements)),
-            Self::Import(_) | Self::Service(_) | Self::Counters(_) => None,
+            Self::Import(_) | Self::Service(_) | Self::Counters(_) | Self::Paths(_) => None,
         }
     }
 }
@@ -375,6 +376,26 @@ pub enum CounterStatement {
     Type(String),
 }
 
+/// Mapping of a path in the stats segment to a counter set
+///
+/// As per vppapigen, the counter set isn't required to refer to one defined by a `counters`
+/// statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CounterPath {
+    path: String,
+    counter: String,
+}
+
+impl CounterPath {
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn counter(&self) -> &str {
+        &self.counter
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CheckedCounters {
     name: String,
@@ -464,7 +485,7 @@ peg::parser! {
             / enumflag()
             / union()
             / service()
-            // / paths()
+            / paths()
             / counters()
 
         rule define() -> Statement
@@ -619,6 +640,15 @@ peg::parser! {
             / _ "units" _ s:string_literal() _ ";" { CounterStatement::Units(s) }
             / _ "description" _ s:string_literal() _ ";" { CounterStatement::Description(s) }
             / _ "type" _ t:identifier() _ ";" { CounterStatement::Type(t) }
+
+        rule paths() -> Statement
+            = _ "paths" _ "{" p:path_elements() _ "}" _ ";" { Statement::Paths(p) }
+
+        rule path_elements() -> Vec<CounterPath>
+            = p:(path_element()+) { p }
+
+        rule path_element() -> CounterPath
+            = _ path:string_literal() _ counter:string_literal() _ ";" { CounterPath { path, counter } }
     }
 }
 
@@ -1028,6 +1058,8 @@ pub struct ApiParser {
     enums: Vec<Enum>,
     enumflags: Vec<Enum>,
     counters: Vec<CheckedCounters>,
+    /// Paths for each paths statement
+    paths: Vec<Vec<CounterPath>>,
 
     file_crc: u32,
 }
@@ -1327,7 +1359,7 @@ impl ApiParser {
                     }
                     continue;
                 }
-                // As per vppapigen, counters in imported files are ignored
+                // As per vppapigen, counters and paths in imported files are ignored
                 Statement::Counters(counters) => {
                     if import.is_none() {
                         self.counters.push(CheckedCounters {
@@ -1338,6 +1370,12 @@ impl ApiParser {
                                 .map(CheckedCounterElement::try_from)
                                 .collect::<Result<Vec<_>, Error>>()?,
                         });
+                    }
+                    continue;
+                }
+                Statement::Paths(paths) => {
+                    if import.is_none() {
+                        self.paths.push(paths);
                     }
                     continue;
                 }
@@ -1550,12 +1588,18 @@ impl ApiParser {
     pub fn counters(&self) -> &[CheckedCounters] {
         &self.counters
     }
+
+    /// Paths for each paths statement
+    pub fn paths(&self) -> &[Vec<CounterPath>] {
+        &self.paths
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::parser::{
-        ApiParser, Error, FieldSize, OptionStatement, Statement, TypeDetails, api_parser,
+        ApiParser, CounterPath, Error, FieldSize, OptionStatement, Statement, TypeDetails,
+        api_parser,
     };
     use pretty_assertions::assert_eq;
 
@@ -2293,8 +2337,52 @@ mod tests {
         };
         assert_eq!(fields[0].r#type, "u32");
 
-        // As per vppapigen, counters in imported files are ignored
+        // As per vppapigen, counters and paths in imported files are ignored
         assert!(api.counters().is_empty());
+        assert_eq!(api.paths(), [] as [Vec<CounterPath>; 0]);
+    }
+
+    #[test]
+    fn paths() {
+        let path = |path: &str, counter: &str| CounterPath {
+            path: path.to_string(),
+            counter: counter.to_string(),
+        };
+
+        let statements = api_parser::statement_list(
+            r#"
+paths {
+  "/err/bfd-udp4-input" "bfd";
+  "/err/bfd-udp6-input" "bfd";
+};
+paths {
+  "/err/bfd-worker-input" "bfd_udp_tx";
+};
+typedef paths_field {
+  u32 paths;
+};
+"#,
+        )
+        .expect("parsing failed");
+        let [
+            Statement::Paths(paths1),
+            Statement::Paths(paths2),
+            Statement::TypedefBlock { fields, .. },
+        ] = statements.as_slice()
+        else {
+            panic!("unexpected statements {statements:?}");
+        };
+        assert_eq!(
+            paths1,
+            &[
+                path("/err/bfd-udp4-input", "bfd"),
+                path("/err/bfd-udp6-input", "bfd"),
+            ]
+        );
+        // A paths statement with a single path is still a list of paths
+        assert_eq!(paths2, &[path("/err/bfd-worker-input", "bfd_udp_tx")]);
+        // paths is still allowed as a field name
+        assert_eq!(fields[0].name, "paths");
     }
 
     #[test]
