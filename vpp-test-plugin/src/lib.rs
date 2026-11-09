@@ -792,10 +792,46 @@ impl PartialEq for test_types_api::TestAddress {
     }
 }
 
-impl ::vpp_plugin::vlibapi::EndianSwap for test_types_api::TestAddressUnion {
-    unsafe fn endian_swap(&mut self, to_net: bool) {
-        let _ = to_net;
-        // no-op
+impl std::fmt::Debug for test_api::TestAddress2 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        unsafe {
+            if self.af == TEST_ADDRESS_IP4 {
+                self.un.ip4.fmt(f)
+            } else if self.af == TEST_ADDRESS_IP6 {
+                self.un.ip6.fmt(f)
+            } else {
+                write!(f, "Unknown af {:?}", self.af)
+            }
+        }
+    }
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for test_api::TestAddress2 {
+    fn default() -> Self {
+        Self {
+            af: Default::default(),
+            un: test_api::TestAddressUnion2 {
+                ip4: TestIp4Address::default(),
+            },
+        }
+    }
+}
+
+impl PartialEq for test_api::TestAddress2 {
+    fn eq(&self, other: &Self) -> bool {
+        if self.af != other.af {
+            return false;
+        }
+        unsafe {
+            if self.af == TEST_ADDRESS_IP4 {
+                self.un.ip4 == other.un.ip4
+            } else if self.af == TEST_ADDRESS_IP6 {
+                self.un.ip6 == other.un.ip6
+            } else {
+                false
+            }
+        }
     }
 }
 
@@ -1339,4 +1375,110 @@ vlib_plugin_register! {
     version: "1.0",
     description: "Test",
     version_required: vpp_plugin::VPP_BUILD_VER,
+}
+
+#[cfg(test)]
+mod test_tagged_union_api {
+    include!(concat!(env!("OUT_DIR"), "/src/test_tagged_union_api.rs"));
+}
+
+#[cfg(test)]
+mod tests {
+    use vpp_plugin::vlibapi::EndianSwap;
+
+    use crate::{
+        test_tagged_union_api::{
+            TestDirTagged, TestDirUnion, TestFlagsTagged, TestFlagsUnion, TestUnionFlags,
+        },
+        test_types_api::{TestDir2, TestType},
+    };
+
+    /// Swap to network order and check the expected result, then swap back
+    fn round_trip_flags(value: TestFlagsTagged, check: impl Fn(&TestFlagsTagged)) {
+        let mut swapped = value;
+        unsafe { swapped.endian_swap(true) };
+        let flags = swapped.flags;
+        let expected_flags = value.flags;
+        assert_eq!(flags.bits(), expected_flags.bits().to_be());
+        check(&swapped);
+        unsafe { swapped.endian_swap(false) };
+        let flags = swapped.flags;
+        assert_eq!(flags, expected_flags);
+    }
+
+    #[test]
+    fn endian_swap_enumflag_primitive_arm() {
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion { a: 0x01020304 },
+            flags: TestUnionFlags::A,
+        };
+        round_trip_flags(value, |swapped| {
+            assert_eq!(unsafe { swapped.un.a }, 0x01020304u32.to_be());
+        });
+        assert_eq!(unsafe { value.un.a }, 0x01020304);
+
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion { b: 0x0102 },
+            flags: TestUnionFlags::B,
+        };
+        round_trip_flags(value, |swapped| {
+            assert_eq!(unsafe { swapped.un.b }, 0x0102u16.to_be());
+        });
+    }
+
+    #[test]
+    fn endian_swap_enumflag_typedef_arm() {
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion {
+                c: TestType { field1: 0x01020304 },
+            },
+            flags: TestUnionFlags::C,
+        };
+        round_trip_flags(value, |swapped| {
+            let field1 = unsafe { swapped.un.c.field1 };
+            assert_eq!(field1, 0x01020304u32.to_be());
+        });
+    }
+
+    #[test]
+    fn endian_swap_enumflag_no_matching_case() {
+        // A combination of flags doesn't select any arm, so the union is left untouched
+        for flags in [
+            TestUnionFlags::A | TestUnionFlags::B,
+            TestUnionFlags::empty(),
+        ] {
+            let value = TestFlagsTagged {
+                un: TestFlagsUnion { a: 0x01020304 },
+                flags,
+            };
+            round_trip_flags(value, |swapped| {
+                assert_eq!(unsafe { swapped.un.a }, 0x01020304);
+            });
+        }
+    }
+
+    #[test]
+    fn endian_swap_imported_enumflag() {
+        let mut value = TestDirTagged {
+            dir: TestDir2::RX,
+            un: TestDirUnion {
+                rx: 0x0102030405060708,
+            },
+        };
+        unsafe { value.endian_swap(true) };
+        assert_eq!(unsafe { value.un.rx }, 0x0102030405060708u64.to_be());
+        unsafe { value.endian_swap(false) };
+        assert_eq!(unsafe { value.un.rx }, 0x0102030405060708);
+        let dir = value.dir;
+        assert_eq!(dir, TestDir2::RX);
+
+        let mut value = TestDirTagged {
+            dir: TestDir2::TX,
+            un: TestDirUnion { tx: -0x01020304 },
+        };
+        unsafe { value.endian_swap(true) };
+        assert_eq!(unsafe { value.un.tx }, (-0x01020304i32).to_be());
+        unsafe { value.endian_swap(false) };
+        assert_eq!(unsafe { value.un.tx }, -0x01020304);
+    }
 }

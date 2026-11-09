@@ -1,0 +1,20 @@
+enumflag tu_flags : u16 {
+  TU_FLAGS_A = 0x1,
+  TU_FLAGS_B = 0x2,
+  TU_FLAGS_C = 0x4,
+};
+
+typedef ip4_address {
+  u8 addr[4];
+};
+
+union flags_union {
+  u32 a [case=TU_FLAGS_A];
+  u16 b [case=TU_FLAGS_B];
+  vl_api_ip4_address_t c [case=TU_FLAGS_C];
+};
+
+manual_print typedef flags_tagged {
+  vl_api_flags_union_t un [discriminator=flags];
+  vl_api_tu_flags_t flags;
+};
