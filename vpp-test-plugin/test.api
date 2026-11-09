@@ -2,6 +2,18 @@ option version = "1.0.0";
 
 import "test_types.api";
 
+// Union referencing imported case
+union test_address_union2 {
+  vl_api_test_ip4_address_t ip4 [case=TEST_ADDRESS_IP4];
+  vl_api_test_ip6_address_t ip6 [case=TEST_ADDRESS_IP6];
+};
+
+// Referencing union with imported discriminator
+manual_print typedef test_address2 {
+  vl_api_test_address_family_t af;
+  vl_api_test_address_union2_t un [discriminator=af];
+};
+
 /**
  * @brief Enable/disable test node on a given interface
  * @param enable - Zero to disable, non-zero to enable
@@ -98,6 +110,7 @@ autoreply autoendian define test_union
   u32 client_index;
   u32 context;
   vl_api_test_address_t addr;
+  vl_api_test_address2_t addr2;
 };
 
 autoendian define test_variable_array_u32 {

@@ -24,13 +24,13 @@ enum test_address_family : u8 {
 
 /* Test union */
 union test_address_union {
-  vl_api_test_ip4_address_t ip4;
-  vl_api_test_ip6_address_t ip6;
+  vl_api_test_ip4_address_t ip4 [case=TEST_ADDRESS_IP4];
+  vl_api_test_ip6_address_t ip6 [case=TEST_ADDRESS_IP6];
 };
 
 manual_print typedef test_address {
   vl_api_test_address_family_t af;
-  vl_api_test_address_union_t un;
+  vl_api_test_address_union_t un [discriminator=af];
 };
 
 typedef test_variable_array_typedef {

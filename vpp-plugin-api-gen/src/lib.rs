@@ -49,6 +49,7 @@
 )]
 
 use std::{
+    collections::HashSet,
     env,
     fs::{DirBuilder, File},
     io::Write,
@@ -60,8 +61,8 @@ use thiserror::Error;
 use crate::{
     json::generate_json,
     parser::{
-        Alias, ApiParser, CountDescriptor, Enum, Field, FieldSize, Message, Type, Union,
-        VL_API_PREFIX, VL_API_SUFFIX,
+        Alias, ApiParser, CountDescriptor, Enum, Field, FieldSize, Message, TaggedUnion, Type,
+        TypeDetails, Union,
     },
 };
 
@@ -109,6 +110,38 @@ fn to_upper_camel_case(s: &str) -> String {
         .collect()
 }
 
+/// Name of the Rust constant for an enumflag variant
+///
+/// For ease of use, the enumflag name is stripped off the front of each flag, since this is
+/// redundant as the flags are already namespaced by the enumflag type.
+fn enumflag_const_name<'a>(enum_name: &str, variant_id: &'a str) -> &'a str {
+    variant_id
+        .strip_prefix(&format!("{}_", enum_name.to_uppercase()))
+        .unwrap_or(variant_id)
+}
+
+/// Rust path of the constant for a case of a tagged union, for use as a match pattern
+fn case_path(tagged_union: &TaggedUnion, case: &str) -> String {
+    // The constants are defined alongside the discriminator type, which may live in an imported
+    // module
+    let prefix = match tagged_union.r#enum.import_module() {
+        Some(import_module) => format!("super::{}_api::", import_module),
+        None => String::new(),
+    };
+    match tagged_union.r#enum.details {
+        // Enumflag constants are associated constants of the type rather than being defined at
+        // module scope. Note that if the path didn't resolve to a constant, the pattern would
+        // instead be a catch-all binding.
+        TypeDetails::EnumFlag { .. } => format!(
+            "{}{}::{}",
+            prefix,
+            to_upper_camel_case(&tagged_union.enum_name),
+            enumflag_const_name(&tagged_union.enum_name, case)
+        ),
+        _ => format!("{}{}", prefix, case),
+    }
+}
+
 trait ApiParserRustExt {
     fn to_rust_type(&self, r#type: &str) -> Result<String, Error>;
     fn to_rust_vla_elem_type(&self, r#type: &str) -> Result<String, Error>;
@@ -117,10 +150,7 @@ trait ApiParserRustExt {
 impl ApiParserRustExt for ApiParser {
     fn to_rust_type(&self, r#type: &str) -> Result<String, Error> {
         Ok(
-            if let Some(t) = r#type.strip_prefix(VL_API_PREFIX)
-                && let Some(t) = t.strip_suffix(VL_API_SUFFIX)
-            {
-                let global_type = self.lookup_global_type(t)?;
+            if let Some((t, global_type)) = self.lookup_field_type(r#type)? {
                 if let Some(import_module) = global_type.import_module() {
                     format!("super::{}_api::{}", import_module, to_upper_camel_case(t))
                 } else {
@@ -831,19 +861,12 @@ impl ApiGenContext<'_> {
             upper_camel_name, e.size,
         )?;
 
-        let upper_name = format!("{}_", e.name.to_uppercase());
         for variant in &e.variants {
-            // For ease of use, strip off the enumflag name being used as part of each defined
-            // flag, since this is redundant as the flags are already namespaced by the enumflag
-            // type
-            let id = variant
-                .id
-                .strip_prefix(&upper_name)
-                .unwrap_or(variant.id.as_str());
             writeln!(
                 self.output_file,
                 "        const {} = {};",
-                id, variant.value,
+                enumflag_const_name(&e.name, &variant.id),
+                variant.value,
             )?;
         }
         writeln!(self.output_file, "    }}")?;
@@ -966,137 +989,191 @@ impl ApiGenContext<'_> {
             EndianSwapInput::Fields(fields) => fields,
             EndianSwapInput::Alias(field) => std::slice::from_ref(field),
         };
+
+        // Snapshot each discriminator in host byte order before any field is swapped, so that
+        // tagged union arms are selected correctly regardless of field order.
+        let mut discriminators_seen = HashSet::new();
+        for tagged_union in fields.iter().filter_map(Field::tagged_union) {
+            let discriminator = &tagged_union.discriminator;
+            if !discriminators_seen.insert(discriminator) {
+                continue;
+            }
+            writeln!(
+                self.output_file,
+                "            let mut tmp_{} = self.{};",
+                discriminator, discriminator
+            )?;
+            writeln!(self.output_file, "            if !to_net {{",)?;
+            writeln!(
+                self.output_file,
+                "                ::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut tmp_{}, false);",
+                discriminator,
+            )?;
+            writeln!(self.output_file, "            }}",)?;
+        }
+
         for field in fields {
-            let field_name = match input {
-                EndianSwapInput::Fields(_) => &field.name,
-                EndianSwapInput::Alias(_) => "0",
+            let place = match input {
+                EndianSwapInput::Fields(_) => format!("self.{}", field.name),
+                EndianSwapInput::Alias(_) => "self.0".to_string(),
             };
 
-            let mut gen_count_variable = |count_field| {
-                let count_field = fields
-                    .iter()
-                    .find(|field| &field.name == count_field)
-                    .ok_or_else(|| {
-                        Error::Unimplemented(format!(
-                            "Unable to find variable count field {}",
-                            count_field
-                        ))
-                    })?;
-                let vla_elem_type = self.parser.to_rust_vla_elem_type(&field.r#type)?;
-                writeln!(self.output_file, "            let count = if to_net {{",)?;
+            if let Some(tagged_union) = field.tagged_union() {
                 writeln!(
                     self.output_file,
-                    "                {}::from_be(self.{})",
-                    count_field.r#type, count_field.name,
+                    "            match tmp_{} {{",
+                    tagged_union.discriminator
                 )?;
-                writeln!(self.output_file, "            }} else {{",)?;
+                for arm in &tagged_union.arms {
+                    writeln!(
+                        self.output_file,
+                        "                {} => {{",
+                        case_path(tagged_union, &arm.case)
+                    )?;
+                    // Union arms can't be variable-length arrays, so there are no siblings needed
+                    // to look up a count
+                    self.generate_field_endian_swap(
+                        &arm.field,
+                        &format!("{}.{}", place, arm.field.name),
+                        &[],
+                        "                    ",
+                    )?;
+                    writeln!(self.output_file, "                }}")?;
+                }
+                // If the enum has no gaps, this is unreachable. Not worth the effort of working this out,
+                // so just suppress the warning.
                 writeln!(
                     self.output_file,
-                    "                self.{}",
-                    count_field.name,
+                    "                #[allow(unreachable_patterns)]"
                 )?;
-                writeln!(self.output_file, "            }};",)?;
-                writeln!(
-                    self.output_file,
-                    "            let array = ::std::slice::from_raw_parts_mut(std::ptr::addr_of_mut!(self.{}) as *mut {}, count as usize);",
-                    field_name, vla_elem_type,
-                )?;
-                Ok::<_, Error>(())
-            };
-
-            match field.r#type.as_str() {
-                "u8" | "bool" => {
-                    writeln!(
-                        self.output_file,
-                        "            // self.{} = self.{} (no-op)",
-                        field_name, field_name
-                    )?;
-                }
-                "string" => {
-                    writeln!(
-                        self.output_file,
-                        "            ::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut self.{}, to_net);",
-                        field_name,
-                    )?;
-                }
-                "u16" | "u32" | "u64" | "i16" | "i32" | "i64" => match &field.size {
-                    Some(FieldSize::Fixed(size)) => {
-                        writeln!(self.output_file, "            for i in 0..{} {{", size)?;
-                        writeln!(
-                            self.output_file,
-                            "                self.{}[i] = self.{}[i].to_be();",
-                            field_name, field_name
-                        )?;
-                        writeln!(self.output_file, "        }}",)?;
-                    }
-                    Some(FieldSize::Variable(Some(count_field))) => {
-                        gen_count_variable(count_field)?;
-                        writeln!(self.output_file, "            for elem in array {{")?;
-                        writeln!(self.output_file, "                *elem = elem.to_be();",)?;
-                        writeln!(self.output_file, "            }}")?;
-                    }
-                    Some(FieldSize::Variable(None)) => {
-                        return Err(Error::Unimplemented(format!(
-                            "variable length array field {} without count",
-                            field_name
-                        )));
-                    }
-                    None => {
-                        writeln!(
-                            self.output_file,
-                            "            self.{} = self.{}.to_be();",
-                            field_name, field_name
-                        )?;
-                    }
-                },
-                "f64" => {
-                    writeln!(
-                        self.output_file,
-                        "            // self.{} = self.{} (no-op according to VPP API)",
-                        field_name, field_name
-                    )?;
-                }
-                _ => match &field.size {
-                    Some(FieldSize::Fixed(size)) => {
-                        writeln!(self.output_file, "            for i in 0..{} {{", size)?;
-                        writeln!(
-                            self.output_file,
-                            "                ::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut self.{}[i], to_net);",
-                            field_name
-                        )?;
-                        writeln!(self.output_file, "            }}",)?;
-                    }
-                    Some(FieldSize::Variable(Some(count_field))) => {
-                        gen_count_variable(count_field)?;
-                        writeln!(self.output_file, "            for elem in array {{")?;
-                        writeln!(
-                            self.output_file,
-                            "                ::vpp_plugin::vlibapi::EndianSwap::endian_swap(elem, to_net);",
-                        )?;
-                        writeln!(self.output_file, "            }}",)?;
-                    }
-                    Some(FieldSize::Variable(None)) => {
-                        return Err(Error::Unimplemented(format!(
-                            "variable length array field {} without count",
-                            field_name
-                        )));
-                    }
-                    None => {
-                        // Copy out the value to a temporary since the structs are packed and so it
-                        // may not be properly aligned
-                        writeln!(
-                            self.output_file,
-                            "            ::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut self.{}, to_net);",
-                            field_name,
-                        )?;
-                    }
-                },
+                writeln!(self.output_file, "                _ => {{}}")?;
+                writeln!(self.output_file, "            }}")?;
+            } else {
+                self.generate_field_endian_swap(field, &place, fields, "            ")?;
             }
         }
         writeln!(self.output_file, "        }}",)?;
         writeln!(self.output_file, "    }}",)?;
         writeln!(self.output_file, "}}")?;
         writeln!(self.output_file)?;
+
+        Ok(())
+    }
+
+    /// Generate code to endian swap a single field that isn't a tagged union
+    ///
+    /// `place` is the expression for the field, e.g. `self.foo`, and `fields` are the field's
+    /// siblings, used to look up the count of a variable-length array. Each line of generated
+    /// code is prefixed with `indent`.
+    fn generate_field_endian_swap(
+        &mut self,
+        field: &Field,
+        place: &str,
+        fields: &[Field],
+        indent: &str,
+    ) -> Result<(), Error> {
+        let mut gen_count_variable = |count_field| {
+            let count_field = fields
+                .iter()
+                .find(|field| &field.name == count_field)
+                .ok_or_else(|| {
+                    Error::Unimplemented(format!(
+                        "Unable to find variable count field {}",
+                        count_field
+                    ))
+                })?;
+            let vla_elem_type = self.parser.to_rust_vla_elem_type(&field.r#type)?;
+            writeln!(self.output_file, "{indent}let count = if to_net {{")?;
+            writeln!(
+                self.output_file,
+                "{indent}    {}::from_be(self.{})",
+                count_field.r#type, count_field.name,
+            )?;
+            writeln!(self.output_file, "{indent}}} else {{")?;
+            writeln!(self.output_file, "{indent}    self.{}", count_field.name)?;
+            writeln!(self.output_file, "{indent}}};")?;
+            writeln!(
+                self.output_file,
+                "{indent}let array = ::std::slice::from_raw_parts_mut(std::ptr::addr_of_mut!({place}) as *mut {vla_elem_type}, count as usize);",
+            )?;
+            Ok::<_, Error>(())
+        };
+
+        match field.r#type.as_str() {
+            "u8" | "bool" => {
+                writeln!(self.output_file, "{indent}// {place} = {place} (no-op)")?;
+            }
+            "string" => {
+                writeln!(
+                    self.output_file,
+                    "{indent}::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut {place}, to_net);",
+                )?;
+            }
+            // Primitives may not be aligned within packed types, so they must be swapped by value
+            // rather than by taking a reference
+            "u16" | "u32" | "u64" | "i16" | "i32" | "i64" => match &field.size {
+                Some(FieldSize::Fixed(size)) => {
+                    writeln!(self.output_file, "{indent}for i in 0..{size} {{")?;
+                    writeln!(
+                        self.output_file,
+                        "{indent}    {place}[i] = {place}[i].to_be();"
+                    )?;
+                    writeln!(self.output_file, "{indent}}}")?;
+                }
+                Some(FieldSize::Variable(Some(count_field))) => {
+                    gen_count_variable(count_field)?;
+                    writeln!(self.output_file, "{indent}for elem in array {{")?;
+                    writeln!(self.output_file, "{indent}    *elem = elem.to_be();")?;
+                    writeln!(self.output_file, "{indent}}}")?;
+                }
+                Some(FieldSize::Variable(None)) => {
+                    return Err(Error::Unimplemented(format!(
+                        "variable length array field {} without count",
+                        field.name
+                    )));
+                }
+                None => {
+                    writeln!(self.output_file, "{indent}{place} = {place}.to_be();")?;
+                }
+            },
+            "f64" => {
+                writeln!(
+                    self.output_file,
+                    "{indent}// {place} = {place} (no-op according to VPP API)"
+                )?;
+            }
+            _ => match &field.size {
+                Some(FieldSize::Fixed(size)) => {
+                    writeln!(self.output_file, "{indent}for i in 0..{size} {{")?;
+                    writeln!(
+                        self.output_file,
+                        "{indent}    ::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut {place}[i], to_net);",
+                    )?;
+                    writeln!(self.output_file, "{indent}}}")?;
+                }
+                Some(FieldSize::Variable(Some(count_field))) => {
+                    gen_count_variable(count_field)?;
+                    writeln!(self.output_file, "{indent}for elem in array {{")?;
+                    writeln!(
+                        self.output_file,
+                        "{indent}    ::vpp_plugin::vlibapi::EndianSwap::endian_swap(elem, to_net);",
+                    )?;
+                    writeln!(self.output_file, "{indent}}}")?;
+                }
+                Some(FieldSize::Variable(None)) => {
+                    return Err(Error::Unimplemented(format!(
+                        "variable length array field {} without count",
+                        field.name
+                    )));
+                }
+                None => {
+                    writeln!(
+                        self.output_file,
+                        "{indent}::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut {place}, to_net);",
+                    )?;
+                }
+            },
+        }
 
         Ok(())
     }
@@ -1748,5 +1825,12 @@ mod tests {
             generate_file_expect_error("tests/service_reply_missing_context.api").to_string(),
             "Message \"create_reply\" used in service for \"create\" is missing required field \"u32 context\""
         );
+    }
+
+    #[test]
+    fn enumflag_const_name_strips_prefix() {
+        assert_eq!(enumflag_const_name("tu_flags", "TU_FLAGS_A"), "A");
+        // Variants not prefixed with the enumflag name are left as is
+        assert_eq!(enumflag_const_name("tu_flags", "OTHER_A"), "OTHER_A");
     }
 }

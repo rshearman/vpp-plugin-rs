@@ -1,0 +1,36 @@
+/* Types only used by unit tests of generated tagged union code */
+
+option version = "1.0.0";
+
+import "test_types.api";
+
+enumflag test_union_flags : u16 {
+  TEST_UNION_FLAGS_A = 0x1,
+  TEST_UNION_FLAGS_B = 0x2,
+  TEST_UNION_FLAGS_C = 0x4,
+};
+
+// Union with primitive and typedef arms, with cases from a local enumflag
+union test_flags_union {
+  u32 a [case=TEST_UNION_FLAGS_A];
+  u16 b [case=TEST_UNION_FLAGS_B];
+  vl_api_test_type_t c [case=TEST_UNION_FLAGS_C];
+};
+
+// Local enumflag discriminator appearing after the union
+manual_print typedef test_flags_tagged {
+  vl_api_test_flags_union_t un [discriminator=flags];
+  vl_api_test_union_flags_t flags;
+};
+
+// Union with primitive arms, with cases from an imported enumflag
+union test_dir_union {
+  u64 rx [case=TEST_DIR2_RX];
+  i32 tx [case=TEST_DIR2_TX];
+};
+
+// Imported enumflag discriminator appearing before the union
+manual_print typedef test_dir_tagged {
+  vl_api_test_dir2_t dir;
+  vl_api_test_dir_union_t un [discriminator=dir];
+};
