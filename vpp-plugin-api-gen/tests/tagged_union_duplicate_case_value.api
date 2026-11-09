@@ -1,0 +1,24 @@
+enum address_family : u8 {
+  ADDRESS_IP4 = 0,
+  ADDRESS_IP6 = 1,
+  ADDRESS_INET6 = 1,
+};
+
+typedef ip4_address {
+  u8 addr[4];
+};
+
+typedef ip6_address {
+  u8 addr[16];
+};
+
+union address_union {
+  vl_api_ip4_address_t ip4 [case=ADDRESS_IP4];
+  vl_api_ip6_address_t ip6 [case=ADDRESS_IP6];
+  vl_api_ip6_address_t inet6 [case=ADDRESS_INET6];
+};
+
+typedef address {
+  vl_api_address_family_t af;
+  vl_api_address_union_t un [discriminator=af];
+};

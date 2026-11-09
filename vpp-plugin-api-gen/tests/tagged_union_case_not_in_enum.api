@@ -1,0 +1,29 @@
+enum address_family : u8 {
+  ADDRESS_IP4 = 0,
+  ADDRESS_IP6,
+};
+
+enumflag flags : u8 {
+  FLAG_A = 0x1,
+  FLAG_B = 0x2,
+};
+
+typedef ip4_address {
+  u8 addr[4];
+};
+
+typedef ip6_address {
+  u8 addr[16];
+};
+
+union address_union {
+  vl_api_ip4_address_t ip4 [case=ADDRESS_IP4];
+  vl_api_ip6_address_t ip6 [case=FLAG_B];
+};
+
+autoreply define address_set {
+  u32 client_index;
+  u32 context;
+  vl_api_address_family_t af;
+  vl_api_address_union_t un [discriminator=af];
+};

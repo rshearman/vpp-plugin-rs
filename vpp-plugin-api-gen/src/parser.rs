@@ -248,15 +248,57 @@ pub enum FieldSize {
     Fixed(u32),
 }
 
+/// Resolved details of a tagged union field, i.e. one with a discriminator option
+#[derive(Debug)]
+pub struct TaggedUnion {
+    /// Name of the sibling field holding the discriminator
+    pub discriminator: String,
+    /// Name of the discriminator's enum or enumflag, without the `vl_api_` prefix and `_t` suffix
+    pub enum_name: String,
+    /// Type entry of the discriminator's enum or enumflag
+    pub r#enum: Arc<TypeEntry>,
+    /// Arms of the union, in declaration order
+    pub arms: Vec<TaggedUnionArm>,
+}
+
+#[derive(Debug)]
+pub struct TaggedUnionArm {
+    /// The union member
+    pub field: Field,
+    /// Enum or enumflag variant selecting this member
+    pub case: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Field {
     pub(crate) r#type: String,
     pub(crate) name: String,
     pub(crate) options: Vec<OptionStatement>,
     pub(crate) size: Option<FieldSize>,
+    /// Populated during processing if the field is a tagged union
+    pub(crate) tagged_union: Option<Arc<TaggedUnion>>,
 }
 
 impl Field {
+    fn new(
+        r#type: String,
+        name: String,
+        options: Vec<OptionStatement>,
+        size: Option<FieldSize>,
+    ) -> Self {
+        Self {
+            r#type,
+            name,
+            options,
+            size,
+            tagged_union: None,
+        }
+    }
+
+    pub fn tagged_union(&self) -> Option<&TaggedUnion> {
+        self.tagged_union.as_deref()
+    }
+
     /// Returns optional description of the count
     fn vla(&self, parser: &ApiParser, other_fields: &[Field]) -> Option<CountDescriptor> {
         if matches!(&self.size, Some(FieldSize::Variable(None))) && self.r#type == "string" {
@@ -270,10 +312,7 @@ impl Field {
                 r#type: count_field.r#type.clone(),
             });
         }
-        if let Some(type_name) = self.r#type.strip_prefix(VL_API_PREFIX)
-            && let Some(type_name) = type_name.strip_suffix(VL_API_SUFFIX)
-            && let Some(type_entry) = parser.global_types_by_name.get(type_name)
-        {
+        if let Ok(Some((_, type_entry))) = parser.lookup_field_type(&self.r#type) {
             let count_descr = type_entry.vla(parser)?;
             match count_descr {
                 CountDescriptor::Field { path, r#type } => {
@@ -292,6 +331,14 @@ impl Field {
             }
         }
         None
+    }
+
+    /// Returns the value of the first option with the given name that has a value
+    fn option_value(&self, option: &str) -> Option<&str> {
+        self.options
+            .iter()
+            .filter(|o| o.option() == option)
+            .find_map(OptionStatement::value)
     }
 }
 
@@ -537,14 +584,14 @@ peg::parser! {
             / d:declaration() { BlockStatement::Declaration(d) }
 
         rule declaration() -> Field
-            = _ t:identifier() __ n:identifier() _ ";" { Field { r#type: t, name: n, options: vec![], size: None } }
-            / _ t:identifier() __ n:identifier() _ "[" _ "]" _ ";" { Field { r#type: t, name: n, options: vec![], size: Some(FieldSize::Variable(None)) } }
-            / _ t:identifier() __ name:identifier() _ "[" _ n:number() _ "]" _ ";" { Field { r#type: t, name, options: vec![], size: Some(FieldSize::Fixed(n)) } }
+            = _ t:identifier() __ n:identifier() _ ";" { Field::new(t, n, vec![], None) }
+            / _ t:identifier() __ n:identifier() _ "[" _ "]" _ ";" { Field::new(t, n, vec![], Some(FieldSize::Variable(None))) }
+            / _ t:identifier() __ name:identifier() _ "[" _ n:number() _ "]" _ ";" { Field::new(t, name, vec![], Some(FieldSize::Fixed(n))) }
             // A single identifier in brackets is ambiguous between a VLA length field and a
             // single option. As per vppapigen, treat it as a VLA, so this must come before
             // the field_options alternative.
-            / _ t:identifier() __ n:identifier() _ "[" _ vla:identifier() _ "]" _ ";" { Field { r#type: t, name: n, options: vec![], size: Some(FieldSize::Variable(Some(vla))) } }
-            / _ t:identifier() __ n:identifier() _ "[" _ o:field_options() _ "]" _ ";" { Field { r#type: t, name: n, options: o, size: None } }
+            / _ t:identifier() __ n:identifier() _ "[" _ vla:identifier() _ "]" _ ";" { Field::new(t, n, vec![], Some(FieldSize::Variable(Some(vla)))) }
+            / _ t:identifier() __ n:identifier() _ "[" _ o:field_options() _ "]" _ ";" { Field::new(t, n, o, None) }
 
         rule number() -> u32
             = "0x" n:$((['0'..='9' | 'a'..='f' | 'A'..='F'])+) {? u32::from_str_radix(n, 16).or(Err("u32")) }
@@ -560,6 +607,7 @@ peg::parser! {
             = "true" !identifier_char() { "true".to_string() }
             / "false" !identifier_char() { "false".to_string() }
             / string_literal()
+            / identifier()
 
         rule string_literal() -> String
             = "\"" s:$("\\\"" / [^'"'])* "\"" { s.into_iter().collect() }
@@ -671,8 +719,8 @@ peg::parser! {
     }
 }
 
-pub(crate) const VL_API_PREFIX: &str = "vl_api_";
-pub(crate) const VL_API_SUFFIX: &str = "_t";
+const VL_API_PREFIX: &str = "vl_api_";
+const VL_API_SUFFIX: &str = "_t";
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -740,6 +788,35 @@ pub enum Error {
     MissingCounterType(String),
     #[error("Missing units for counter {0}")]
     MissingCounterUnits(String),
+    #[error("Discriminator \"{discriminator}\" for field \"{field}\" in \"{name}\" not found")]
+    DiscriminatorNotFound {
+        name: String,
+        field: String,
+        discriminator: String,
+    },
+    #[error("Field \"{field}\" has a discriminator but its type \"{type_name}\" is not a union")]
+    DiscriminatedFieldNotUnion { field: String, type_name: String },
+    #[error(
+        "Discriminator \"{discriminator}\" for field \"{field}\" has type \"{type_name}\" which is not an enum or enumflag"
+    )]
+    DiscriminatorNotEnum {
+        field: String,
+        discriminator: String,
+        type_name: String,
+    },
+    #[error("Field \"{arm}\" in tagged union \"{union}\" is missing a case option")]
+    TaggedUnionMissingCase { union: String, arm: String },
+    #[error(
+        "Case \"{case}\" for field \"{arm}\" in tagged union \"{union}\" is not a variant of enum \"{enum_name}\""
+    )]
+    TaggedUnionCaseNotInEnum {
+        union: String,
+        arm: String,
+        case: String,
+        enum_name: String,
+    },
+    #[error("Case \"{case}\" is used more than once in tagged union \"{union}\"")]
+    TaggedUnionDuplicateCase { union: String, case: String },
 }
 
 fn parse_file(filename: &Path) -> Result<Vec<Statement>, Error> {
@@ -858,12 +935,12 @@ impl Message {
         crc: u32,
         comment: Option<String>,
     ) -> Self {
-        let implicit_fields = [Field {
-            r#type: "u16".to_string(),
-            name: "_vl_msg_id".to_string(),
-            options: vec![],
-            size: None,
-        }];
+        let implicit_fields = [Field::new(
+            "u16".to_string(),
+            "_vl_msg_id".to_string(),
+            vec![],
+            None,
+        )];
         let fields = implicit_fields.into_iter().chain(fields).collect();
 
         Self {
@@ -879,24 +956,9 @@ impl Message {
     fn generated_reply(&self) -> Option<Self> {
         if self.auto_reply() {
             let auto_fields = vec![
-                Field {
-                    r#type: "u16".to_string(),
-                    name: "_vl_msg_id".to_string(),
-                    options: vec![],
-                    size: None,
-                },
-                Field {
-                    r#type: "u32".to_string(),
-                    name: "context".to_string(),
-                    options: vec![],
-                    size: None,
-                },
-                Field {
-                    r#type: "i32".to_string(),
-                    name: "retval".to_string(),
-                    options: vec![],
-                    size: None,
-                },
+                Field::new("u16".to_string(), "_vl_msg_id".to_string(), vec![], None),
+                Field::new("u32".to_string(), "context".to_string(), vec![], None),
+                Field::new("i32".to_string(), "retval".to_string(), vec![], None),
             ];
 
             let mut crc_hash = crc32fast::Hasher::new();
@@ -1160,16 +1222,8 @@ impl ApiParser {
         crc_hash.update(crc_data.as_bytes());
 
         for field in fields {
-            if let Some(type_name) = field.r#type.strip_prefix(VL_API_PREFIX)
-                && let Some(type_name) = type_name.strip_suffix(VL_API_SUFFIX)
-            {
-                if let Some(type_entry) = self.global_types_by_name.get(type_name) {
-                    crc_hash.combine(&type_entry.crc);
-                } else {
-                    return Err(Error::TypeResolution {
-                        type_name: type_name.to_string(),
-                    });
-                }
+            if let Some((_, type_entry)) = self.lookup_field_type(&field.r#type)? {
+                crc_hash.combine(&type_entry.crc);
             }
         }
 
@@ -1205,6 +1259,110 @@ impl ApiParser {
         Ok(vla)
     }
 
+    /// Validate and resolve fields that are tagged unions, i.e. that have a discriminator option
+    ///
+    /// On success, [`Field::tagged_union`] is populated for each such field.
+    fn resolve_tagged_unions(&self, name: &str, fields: &mut [Field]) -> Result<(), Error> {
+        for i in 0..fields.len() {
+            let tagged_union = self.resolve_tagged_union(name, fields, &fields[i])?;
+            fields[i].tagged_union = tagged_union.map(Arc::new);
+        }
+        Ok(())
+    }
+
+    /// Validate and resolve a single field if it is a tagged union
+    ///
+    /// Returns `None` if the field has no discriminator option.
+    fn resolve_tagged_union(
+        &self,
+        name: &str,
+        fields: &[Field],
+        field: &Field,
+    ) -> Result<Option<TaggedUnion>, Error> {
+        let Some(discriminator) = field.option_value("discriminator") else {
+            return Ok(None);
+        };
+
+        let Some(discriminator_field) = fields.iter().find(|f| f.name == discriminator) else {
+            return Err(Error::DiscriminatorNotFound {
+                name: name.to_string(),
+                field: field.name.clone(),
+                discriminator: discriminator.to_string(),
+            });
+        };
+
+        let (union_name, union_fields) = match self
+            .lookup_field_type(&field.r#type)?
+            .map(|(name, t)| (name, &t.details))
+        {
+            Some((union_name, TypeDetails::Union { fields, .. })) if field.size.is_none() => {
+                (union_name, fields)
+            }
+            _ => {
+                return Err(Error::DiscriminatedFieldNotUnion {
+                    field: field.name.clone(),
+                    type_name: field.r#type.clone(),
+                });
+            }
+        };
+
+        let (enum_name, enum_entry, variants) = match self
+            .lookup_field_type(&discriminator_field.r#type)?
+            .map(|(name, t)| (name, t, &t.details))
+        {
+            Some((
+                enum_name,
+                enum_entry,
+                TypeDetails::Enum { variants, .. } | TypeDetails::EnumFlag { variants, .. },
+            )) if discriminator_field.size.is_none() => (enum_name, enum_entry, variants),
+            _ => {
+                return Err(Error::DiscriminatorNotEnum {
+                    field: field.name.clone(),
+                    discriminator: discriminator.to_string(),
+                    type_name: discriminator_field.r#type.clone(),
+                });
+            }
+        };
+
+        let mut arms = Vec::with_capacity(union_fields.len());
+        let mut seen_cases = HashSet::new();
+        for arm in union_fields {
+            let Some(case) = arm.option_value("case") else {
+                return Err(Error::TaggedUnionMissingCase {
+                    union: union_name.to_string(),
+                    arm: arm.name.clone(),
+                });
+            };
+            // Enum variants are checked for unique values when the enum is defined, so distinct
+            // cases can't select the same value
+            if !variants.iter().any(|v| v.id == case) {
+                return Err(Error::TaggedUnionCaseNotInEnum {
+                    union: union_name.to_string(),
+                    arm: arm.name.clone(),
+                    case: case.to_string(),
+                    enum_name: enum_name.to_string(),
+                });
+            }
+            if !seen_cases.insert(case) {
+                return Err(Error::TaggedUnionDuplicateCase {
+                    union: union_name.to_string(),
+                    case: case.to_string(),
+                });
+            }
+            arms.push(TaggedUnionArm {
+                field: arm.clone(),
+                case: case.to_string(),
+            });
+        }
+
+        Ok(Some(TaggedUnion {
+            discriminator: discriminator.to_string(),
+            enum_name: enum_name.to_string(),
+            r#enum: enum_entry.clone(),
+            arms,
+        }))
+    }
+
     /// Process statements
     ///
     /// Returns file CRC.
@@ -1223,11 +1381,12 @@ impl ApiParser {
                 Statement::Define {
                     name,
                     options,
-                    fields,
+                    mut fields,
                     flags,
                     comment,
                 } => {
                     self.validate_vla(&name, &fields, false)?;
+                    self.resolve_tagged_unions(&name, &mut fields)?;
                     if import.is_none() {
                         let crc = self.crc_for_fields(&fields, false)?;
                         let define =
@@ -1243,11 +1402,12 @@ impl ApiParser {
                 Statement::TypedefBlock {
                     name,
                     options,
-                    fields,
+                    mut fields,
                     flags,
                 } => {
                     self.validate_vla(&name, &fields, false)?;
                     let crc = self.crc_for_fields(&fields, false)?;
+                    self.resolve_tagged_unions(&name, &mut fields)?;
                     if import.is_none() {
                         let un = Type {
                             name: name.clone(),
@@ -1620,6 +1780,23 @@ impl ApiParser {
             })
     }
 
+    /// Look up the type of a field
+    ///
+    /// Returns `None` if the type isn't of the form `vl_api_<name>_t` (e.g. a base type), or
+    /// otherwise the bare type name and its entry, erroring if it can't be resolved.
+    pub fn lookup_field_type<'a>(
+        &self,
+        r#type: &'a str,
+    ) -> Result<Option<(&'a str, &Arc<TypeEntry>)>, Error> {
+        let Some(type_name) = r#type
+            .strip_prefix(VL_API_PREFIX)
+            .and_then(|t| t.strip_suffix(VL_API_SUFFIX))
+        else {
+            return Ok(None);
+        };
+        Ok(Some((type_name, self.lookup_global_type(type_name)?)))
+    }
+
     pub fn counters(&self) -> &[CheckedCounters] {
         &self.counters
     }
@@ -1864,10 +2041,21 @@ mod tests {
             (
                 "vl_api_ip4_address_t",
                 "ip4",
-                &[] as &[OptionStatement],
+                &[OptionStatement {
+                    option: "case".to_string(),
+                    value: Some("ADDRESS_IP4".to_string()),
+                }] as &[OptionStatement],
                 &None,
             ),
-            ("vl_api_ip6_address_t", "ip6", &[], &None),
+            (
+                "vl_api_ip6_address_t",
+                "ip6",
+                &[OptionStatement {
+                    option: "case".to_string(),
+                    value: Some("ADDRESS_IP6".to_string()),
+                }],
+                &None,
+            ),
         ];
         let fields: Vec<_> = un
             .fields()
@@ -1898,7 +2086,15 @@ mod tests {
                 &[] as &[OptionStatement],
                 &None,
             ),
-            ("vl_api_address_union_t", "un", &[], &None),
+            (
+                "vl_api_address_union_t",
+                "un",
+                &[OptionStatement {
+                    option: "discriminator".to_string(),
+                    value: Some("af".to_string()),
+                }],
+                &None,
+            ),
         ];
         let fields: Vec<_> = t
             .fields()
@@ -2264,6 +2460,111 @@ mod tests {
     }
 
     #[test]
+    fn tagged_union_enumflag() {
+        let api = ApiParser::new(
+            &format!(
+                "{}/tests/tagged_union_enumflag.api",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+            &[],
+        )
+        .inspect_err(|e| println!("{}", e))
+        .expect("failed");
+
+        let t = api
+            .types()
+            .iter()
+            .find(|t| t.name() == "flags_tagged")
+            .expect("missing flags_tagged type");
+        assert!(t.fields()[1].tagged_union().is_none());
+        let tagged_union = t.fields()[0]
+            .tagged_union()
+            .expect("un should be a tagged union");
+        assert_eq!(tagged_union.discriminator, "flags");
+        assert_eq!(tagged_union.enum_name, "tu_flags");
+        assert!(matches!(
+            tagged_union.r#enum.details,
+            TypeDetails::EnumFlag { .. }
+        ));
+        let arms: Vec<_> = tagged_union
+            .arms
+            .iter()
+            .map(|arm| {
+                (
+                    arm.field.name.as_str(),
+                    arm.field.r#type.as_str(),
+                    arm.case.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            arms,
+            [
+                ("a", "u32", "TU_FLAGS_A"),
+                ("b", "u16", "TU_FLAGS_B"),
+                ("c", "vl_api_ip4_address_t", "TU_FLAGS_C"),
+            ]
+        );
+    }
+
+    #[test]
+    fn tagged_union_discriminator_not_found() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_discriminator_not_found.api").to_string(),
+            "Discriminator \"family\" for field \"un\" in \"address\" not found"
+        );
+    }
+
+    #[test]
+    fn tagged_union_not_union() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_not_union.api").to_string(),
+            "Field \"un\" has a discriminator but its type \"vl_api_ip4_address_t\" is not a union"
+        );
+    }
+
+    #[test]
+    fn tagged_union_discriminator_not_enum() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_discriminator_not_enum.api").to_string(),
+            "Discriminator \"af\" for field \"un\" has type \"u8\" which is not an enum or enumflag"
+        );
+    }
+
+    #[test]
+    fn tagged_union_missing_case() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_missing_case.api").to_string(),
+            "Field \"ip6\" in tagged union \"address_union\" is missing a case option"
+        );
+    }
+
+    #[test]
+    fn tagged_union_case_not_in_enum() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_case_not_in_enum.api").to_string(),
+            "Case \"FLAG_B\" for field \"ip6\" in tagged union \"address_union\" is not a variant of enum \"address_family\""
+        );
+    }
+
+    #[test]
+    fn tagged_union_duplicate_case() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_duplicate_case.api").to_string(),
+            "Case \"FLAG_A\" is used more than once in tagged union \"address_union\""
+        );
+    }
+
+    #[test]
+    fn tagged_union_duplicate_case_value() {
+        // Ambiguous arms are prevented by the discriminator enum's own duplicate value check
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_duplicate_case_value.api").to_string(),
+            "Variant \"ADDRESS_INET6\" in enum \"address_family\" has the same value (1) as variant \"ADDRESS_IP6\""
+        );
+    }
+
+    #[test]
     fn enum_duplicate_implicit_value() {
         assert_eq!(
             parse_file_expect_error("tests/enum_duplicate_implicit_value.api").to_string(),
@@ -2353,10 +2654,24 @@ mod tests {
             .expect_err("unexpectedly parsed comma after option without value");
 
         // A keyword value must not be split from following identifier characters
-        parse_typedef_fields("typedef t { u8 a[x=true_value]; };")
-            .expect_err("unexpectedly parsed keyword prefix of identifier as value");
-        parse_typedef_fields("typedef t { u8 a[x=falsey y]; };")
-            .expect_err("unexpectedly parsed keyword prefix of identifier as value");
+        let fields = parse_typedef_fields(
+            "typedef t {
+                u8 a[x=true_value];
+                u8 b[x=falsey y];
+            };",
+        )
+        .expect("failed to parse");
+        assert_eq!(
+            fields,
+            [
+                ("a".to_string(), vec![option("x", Some("true_value"))], None),
+                (
+                    "b".to_string(),
+                    vec![option("x", Some("falsey")), option("y", None)],
+                    None
+                ),
+            ]
+        );
     }
 
     #[test]
