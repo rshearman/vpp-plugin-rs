@@ -175,6 +175,25 @@ fn check_enum_backwards_compatible_last(
     Ok(())
 }
 
+/// Check that no two variants of an enum or enumflag share the same value
+///
+/// Values may be explicit or implicitly derived from the previous variant, so this must be
+/// checked on the resolved variants.
+fn check_enum_unique_values(name: &str, variants: &[EnumVariant]) -> Result<(), Error> {
+    let mut seen_values = HashMap::new();
+    for variant in variants {
+        if let Some(other_variant) = seen_values.insert(variant.value, &variant.id) {
+            return Err(Error::DuplicateEnumValue {
+                r#enum: name.to_string(),
+                variant: variant.id.clone(),
+                other_variant: other_variant.clone(),
+                value: variant.value,
+            });
+        }
+    }
+    Ok(())
+}
+
 impl Statement {
     fn crc_data(&self) -> Option<String> {
         match self {
@@ -699,6 +718,15 @@ pub enum Error {
         "Variant \"{0}\" in enum \"{1}\" follows a backwards_compatible variant, but backwards_compatible variants must be last"
     )]
     BackwardsCompatibleEnumVariantNotLast(String, String),
+    #[error(
+        "Variant \"{variant}\" in enum \"{enum}\" has the same value ({value}) as variant \"{other_variant}\""
+    )]
+    DuplicateEnumValue {
+        r#enum: String,
+        variant: String,
+        other_variant: String,
+        value: u32,
+    },
     #[error("Unable to find import \"{import}\" in include directories {include_dirs:?}")]
     ImportNotFound {
         import: String,
@@ -1303,6 +1331,7 @@ impl ApiParser {
                     let mut crc = crc32fast::Hasher::new();
                     crc.update(crc_data_for_enum_block_statements(&block_statements).as_bytes());
                     let variants = enum_variants_from_block_statements(&block_statements);
+                    check_enum_unique_values(&name, &variants)?;
                     if import.is_none() {
                         self.enums.push(Enum {
                             name: name.clone(),
@@ -1329,6 +1358,7 @@ impl ApiParser {
                     let mut crc = crc32fast::Hasher::new();
                     crc.update(crc_data_for_enum_block_statements(&block_statements).as_bytes());
                     let variants = enum_variants_from_block_statements(&block_statements);
+                    check_enum_unique_values(&name, &variants)?;
                     if import.is_none() {
                         self.enumflags.push(Enum {
                             name: name.clone(),
@@ -2230,6 +2260,22 @@ mod tests {
         assert_eq!(
             parse_file_expect_error("tests/string_not_array.api").to_string(),
             "String field \"s\" must be declared as an array"
+        );
+    }
+
+    #[test]
+    fn enum_duplicate_implicit_value() {
+        assert_eq!(
+            parse_file_expect_error("tests/enum_duplicate_implicit_value.api").to_string(),
+            "Variant \"IP_API_PROTO_GGP\" in enum \"ip_proto\" has the same value (2) as variant \"IP_API_PROTO_IGMP\""
+        );
+    }
+
+    #[test]
+    fn enumflag_duplicate_value() {
+        assert_eq!(
+            parse_file_expect_error("tests/enumflag_duplicate_value.api").to_string(),
+            "Variant \"IF_STATUS_API_FLAG_LINK_ALIAS\" in enum \"if_status_flags\" has the same value (2) as variant \"IF_STATUS_API_FLAG_LINK_UP\""
         );
     }
 
