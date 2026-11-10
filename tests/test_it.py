@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ Integration tests """
 
-from socket import AF_INET, inet_pton
+from socket import AF_INET, AF_INET6, inet_pton
 from time import sleep
 import unittest
 
@@ -622,12 +622,12 @@ class IntegrationTestCase(IntegrationTestBase):
 
     def test_api_union(self):
         """API using union"""
-        test_address_family = VppEnum.vl_api_test_address_family_t
+        address_family = VppEnum.vl_api_address_family_t
         self.vapi.api(
             self.vapi.papi.test_union,
             {
                 'addr': {
-                    'af': test_address_family.TEST_ADDRESS_IP4,
+                    'af': address_family.ADDRESS_IP4,
                     'un': {
                         'ip4': bytes([1, 2, 3, 4]),
                     }
@@ -638,7 +638,7 @@ class IntegrationTestCase(IntegrationTestBase):
             self.vapi.papi.test_union,
             {
                 'addr': {
-                    'af': test_address_family.TEST_ADDRESS_IP6,
+                    'af': address_family.ADDRESS_IP6,
                     'un': {
                         'ip6': bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0]),
                     }
@@ -648,11 +648,11 @@ class IntegrationTestCase(IntegrationTestBase):
 
     def test_api_union_direct(self):
         """API using tagged union directly in message"""
-        test_address_family = VppEnum.vl_api_test_address_family_t
+        address_family = VppEnum.vl_api_address_family_t
         self.vapi.api(
             self.vapi.papi.test_union_direct,
             {
-                'af': test_address_family.TEST_ADDRESS_IP4,
+                'af': address_family.ADDRESS_IP4,
                 'un': {
                     'ip4': bytes([1, 2, 3, 4]),
                 },
@@ -661,9 +661,34 @@ class IntegrationTestCase(IntegrationTestBase):
         self.vapi.api(
             self.vapi.papi.test_union_direct,
             {
-                'af': test_address_family.TEST_ADDRESS_IP6,
+                'af': address_family.ADDRESS_IP6,
                 'un': {
                     'ip6': bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0]),
+                },
+            },
+        )
+
+    def test_api_ip_types(self):
+        """API using types from ip_types.api"""
+        address_family = VppEnum.vl_api_address_family_t
+        self.vapi.api(
+            self.vapi.papi.test_ip_types,
+            {
+                'ip4': '192.0.2.1',
+                'ip6': '2001:db8::1',
+                'addr4': '192.0.2.1',
+                'addr6': '2001:db8::1',
+                'ip4_prefix': '192.0.2.0/24',
+                'ip6_prefix': '2001:db8::/32',
+                'prefix': '198.51.100.0/24',
+                'addr_with_prefix': '2001:db8::1/64',
+                'ip4_addr_with_prefix': '10.0.0.1/8',
+                'ip6_addr_with_prefix': '2001:db8::1/64',
+                'mprefix': {
+                    'af': address_family.ADDRESS_IP6,
+                    'grp_address_length': 128,
+                    'grp_address': {'ip6': inet_pton(AF_INET6, 'ff02::1')},
+                    'src_address': {'ip6': inet_pton(AF_INET6, '2001:db8::1')},
                 },
             },
         )
