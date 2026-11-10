@@ -6,7 +6,7 @@ use lazy_static::lazy_static;
 use std::{
     collections::HashSet,
     fmt,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     pin::pin,
     ptr::NonNull,
     sync::{LazyLock, Mutex, atomic::AtomicU64},
@@ -41,11 +41,18 @@ use vpp_plugin::{
     vppinfra::{error::ErrorStack, unlikely},
 };
 
-use crate::test_api::TestProcessErrorCounter;
-use crate::test_types_api::{
-    TEST_ADDRESS_IP4, TEST_ADDRESS_IP6, TEST_NODE_TYPE_X1, TEST_NODE_TYPE_X4, TestIp4Address,
-    TestIp6Address,
+use crate::ip_types_api::{
+    ADDRESS_IP4, ADDRESS_IP6, Address, AddressFamily, AddressWithPrefix, Ip4AddressWithPrefix,
+    Ip4Prefix, Ip6AddressWithPrefix, Ip6Prefix, Mprefix, Prefix, UnknownAddressFamily,
 };
+use crate::test_api::TestProcessErrorCounter;
+use crate::test_types_api::{TEST_NODE_TYPE_X1, TEST_NODE_TYPE_X4, TestIp4Address, TestIp6Address};
+
+// Only some of VPP's IP types are used by the test plugin
+#[allow(dead_code)]
+mod ip_types_api {
+    include!(concat!(env!("OUT_DIR"), "/src/ip_types_api.rs"));
+}
 
 mod test_api {
     include!(concat!(env!("OUT_DIR"), "/src/test_api.rs"));
@@ -749,6 +756,16 @@ impl PartialEq for test_types_api::TestIp6Address {
     }
 }
 
+/// Returns an error, printing the mismatch, if `actual` isn't equal to `expected`
+fn check_eq<T: PartialEq + fmt::Debug>(what: &str, actual: T, expected: T) -> Result<(), i32> {
+    if actual == expected {
+        Ok(())
+    } else {
+        println!("{what}: expected {expected:?}, but got {actual:?}");
+        Err(VNET_ERR_INVALID_ARGUMENT.into())
+    }
+}
+
 struct ApiHandler;
 
 impl test_api::Handlers for ApiHandler {
@@ -899,11 +916,11 @@ impl test_api::Handlers for ApiHandler {
         mp: &test_api::TestUnion,
     ) -> Result<vlibapi::Message<test_api::TestUnionReply>, i32> {
         unsafe {
-            if mp.addr.af == TEST_ADDRESS_IP4 {
+            if mp.addr.af == ADDRESS_IP4 {
                 if mp.addr.un.ip4.0 != [1, 2, 3, 4] {
                     return Err(VNET_ERR_INVALID_ARGUMENT.into());
                 }
-            } else if mp.addr.af == TEST_ADDRESS_IP6 {
+            } else if mp.addr.af == ADDRESS_IP6 {
                 if mp.addr.un.ip6.0 != [1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0]
                 {
                     return Err(VNET_ERR_INVALID_ARGUMENT.into());
@@ -929,9 +946,9 @@ impl test_api::Handlers for ApiHandler {
             af: mp.af,
             ..Default::default()
         };
-        if mp.af == TEST_ADDRESS_IP4 {
+        if mp.af == ADDRESS_IP4 {
             expected.un.ip4 = TestIp4Address([1, 2, 3, 4]);
-        } else if mp.af == TEST_ADDRESS_IP6 {
+        } else if mp.af == ADDRESS_IP6 {
             expected.un.ip6 =
                 TestIp6Address([1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0]);
         } else {
@@ -940,6 +957,112 @@ impl test_api::Handlers for ApiHandler {
         if *mp != expected {
             return Err(VNET_ERR_INVALID_ARGUMENT.into());
         }
+        Ok(Default::default())
+    }
+
+    fn test_ip_types(
+        _vm: &vlib::BarrierHeldMainRef,
+        mp: &test_api::TestIpTypes,
+    ) -> Result<vlibapi::Message<test_api::TestIpTypesReply>, i32> {
+        println!("test_ip_types({:?})", mp);
+        let ip4 = Ipv4Addr::new(192, 0, 2, 1);
+        let ip6 = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+
+        // Exercise the generated conversions from std types, Default and PartialEq
+        let mut mprefix = Mprefix {
+            af: ADDRESS_IP6,
+            grp_address_length: 128,
+            ..Default::default()
+        };
+        mprefix.grp_address.ip6 = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1).into();
+        mprefix.src_address.ip6 = ip6.into();
+        let expected = test_api::TestIpTypes {
+            client_index: mp.client_index,
+            context: mp.context,
+            ip4: ip4.into(),
+            ip6: ip6.into(),
+            addr4: IpAddr::from(ip4).into(),
+            addr6: IpAddr::from(ip6).into(),
+            ip4_prefix: Ip4Prefix {
+                address: Ipv4Addr::new(192, 0, 2, 0).into(),
+                len: 24,
+            },
+            ip6_prefix: Ip6Prefix {
+                address: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0).into(),
+                len: 32,
+            },
+            prefix: Prefix {
+                address: IpAddr::from(Ipv4Addr::new(198, 51, 100, 0)).into(),
+                len: 24,
+            },
+            addr_with_prefix: AddressWithPrefix(Prefix {
+                address: IpAddr::from(ip6).into(),
+                len: 64,
+            }),
+            ip4_addr_with_prefix: Ip4AddressWithPrefix(Ip4Prefix {
+                address: Ipv4Addr::new(10, 0, 0, 1).into(),
+                len: 8,
+            }),
+            ip6_addr_with_prefix: Ip6AddressWithPrefix(Ip6Prefix {
+                address: ip6.into(),
+                len: 64,
+            }),
+            mprefix,
+            ..Default::default()
+        };
+        check_eq("message", *mp, expected)?;
+
+        // Exercise the generated conversions to std types
+        check_eq("ip4 to std", Ipv4Addr::from(mp.ip4), ip4)?;
+        check_eq("ip6 to std", Ipv6Addr::from(mp.ip6), ip6)?;
+        check_eq("addr4 to std", IpAddr::try_from(mp.addr4), Ok(ip4.into()))?;
+        check_eq("addr6 to std", IpAddr::try_from(mp.addr6), Ok(ip6.into()))?;
+        let unknown = Address {
+            af: AddressFamily(2),
+            ..Default::default()
+        };
+        check_eq(
+            "unknown address to std",
+            IpAddr::try_from(unknown),
+            Err(UnknownAddressFamily(AddressFamily(2))),
+        )?;
+
+        // Exercise the generated Debug implementations
+        let debug = [
+            (format!("{:?}", { mp.ip4 }), "192.0.2.1"),
+            (format!("{:?}", { mp.ip6 }), "2001:db8::1"),
+            (format!("{:?}", { mp.addr4 }), "192.0.2.1"),
+            (format!("{:?}", { mp.addr6 }), "2001:db8::1"),
+            (format!("{:?}", { mp.ip4_prefix }), "192.0.2.0/24"),
+            (format!("{:?}", { mp.ip6_prefix }), "2001:db8::/32"),
+            (format!("{:?}", { mp.prefix }), "198.51.100.0/24"),
+            (format!("{:?}", { mp.addr_with_prefix }), "2001:db8::1/64"),
+            (format!("{:?}", { mp.ip4_addr_with_prefix }), "10.0.0.1/8"),
+            (
+                format!("{:?}", { mp.ip6_addr_with_prefix }),
+                "2001:db8::1/64",
+            ),
+            (
+                format!("{:?}", { mp.mprefix }),
+                "Mprefix { af: ADDRESS_IP6, grp_address_length: 128, grp_address: ff02::1, src_address: 2001:db8::1 }",
+            ),
+            (format!("{:?}", Address::default()), "0.0.0.0"),
+            (format!("{:?}", unknown), "<unknown address family 2>"),
+            (
+                format!(
+                    "{:?}",
+                    Prefix {
+                        address: unknown,
+                        len: 0
+                    }
+                ),
+                "<unknown address family 2>/0",
+            ),
+        ];
+        for (actual, expected) in &debug {
+            check_eq("Debug", actual.as_str(), expected)?;
+        }
+
         Ok(Default::default())
     }
 

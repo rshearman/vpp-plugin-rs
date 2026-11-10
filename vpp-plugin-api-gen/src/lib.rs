@@ -64,10 +64,12 @@ use crate::{
         Alias, ApiParser, CountDescriptor, Enum, Field, FieldSize, Message, TaggedUnion, Type,
         TypeDetails, Union,
     },
+    well_known::{WellKnownAlias, WellKnownType},
 };
 
 mod json;
 mod parser;
+mod well_known;
 
 /// Errors that can occur during API file parsing and code generation
 #[derive(Debug, Error)]
@@ -903,7 +905,10 @@ impl ApiGenContext<'_> {
     fn generate_alias(&mut self, alias: &Alias) -> Result<(), Error> {
         let upper_camel_name = to_upper_camel_case(&alias.field().name);
 
-        let opt_derives = if alias.manual_print() {
+        let well_known = WellKnownAlias::detect(&self.module, alias);
+        let opt_derives = if well_known.is_some() {
+            "PartialEq, Default, "
+        } else if alias.manual_print() {
             ""
         } else {
             "Debug, PartialEq, Default, "
@@ -928,6 +933,10 @@ impl ApiGenContext<'_> {
         }
         if !alias.manual_endian() {
             self.generate_endian_swap(&alias.field().name, EndianSwapInput::Alias(alias.field()))?;
+        }
+
+        if let Some(well_known) = well_known {
+            self.generate_well_known_alias_impls(&alias.field().name, well_known)?;
         }
 
         Ok(())
@@ -1380,17 +1389,23 @@ impl ApiGenContext<'_> {
     fn generate_type(&mut self, t: &Type) -> Result<(), Error> {
         let upper_camel_name = to_upper_camel_case(t.name());
 
-        let has_tagged_unions = has_tagged_unions(t.fields());
+        let well_known = WellKnownType::detect(&self.module, t);
+        let implied_fields = well_known::implied_fields(self.parser, &self.module, t);
+        let fields = implied_fields.as_deref().unwrap_or(t.fields());
+        let manual_print = t.manual_print() && well_known.is_none();
+
+        let has_tagged_unions = has_tagged_unions(fields);
         // Debug is implemented manually for types with a VLA to avoid printing the zero-length
-        // field and for tagged unions to only print the selected arm
-        let debug = !t.manual_print();
-        let manual_debug = debug && (t.vla_non_recursive().is_some() || has_tagged_unions);
+        // field, for tagged unions to only print the selected arm, and for well-known types
+        let debug = !manual_print;
+        let manual_debug =
+            debug && (well_known.is_some() || t.vla_non_recursive().is_some() || has_tagged_unions);
         let derive_debug = debug && !manual_debug;
-        let partial_eq = !t.manual_print() && t.vla(self.parser).is_none();
+        let partial_eq = !manual_print && t.vla(self.parser).is_none();
         let manual_partial_eq = partial_eq && has_tagged_unions;
         let derive_partial_eq = partial_eq && !manual_partial_eq;
-        let manual_default = !t.manual_print() && has_tagged_unions;
-        let derive_default = !t.manual_print() && !manual_default;
+        let manual_default = !manual_print && has_tagged_unions;
+        let derive_default = !manual_print && !manual_default;
         writeln!(
             self.output_file,
             "#[derive({}{}{}Copy, Clone)]",
@@ -1416,17 +1431,20 @@ impl ApiGenContext<'_> {
         }
 
         if manual_debug {
-            self.generate_debug_trait(t.name(), t.fields())?;
+            match well_known {
+                Some(well_known) => self.generate_well_known_type_impls(t.name(), well_known)?,
+                None => self.generate_debug_trait(t.name(), fields)?,
+            }
         }
         if manual_partial_eq {
-            self.generate_partial_eq_trait(t.name(), t.fields())?;
+            self.generate_partial_eq_trait(t.name(), fields)?;
         }
         if manual_default {
-            self.generate_default_trait(t.name(), t.fields(), false)?;
+            self.generate_default_trait(t.name(), fields, false)?;
         }
 
         if !t.manual_endian() {
-            self.generate_endian_swap(t.name(), EndianSwapInput::Fields(t.fields()))?;
+            self.generate_endian_swap(t.name(), EndianSwapInput::Fields(fields))?;
         }
         Ok(())
     }
