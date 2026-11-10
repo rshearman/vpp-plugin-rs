@@ -1,0 +1,5 @@
+enumflag if_status_flags {
+  IF_STATUS_API_FLAG_ADMIN_UP = 1,
+  IF_STATUS_API_FLAG_LINK_UP = 2,
+  IF_STATUS_API_FLAG_LINK_ALIAS = 0x2,
+};
