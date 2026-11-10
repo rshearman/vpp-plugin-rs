@@ -670,9 +670,9 @@ impl ApiGenContext<'_> {
         let has_tagged_unions = has_tagged_unions(message.fields());
         // Debug is implemented manually for messages with a VLA to avoid printing the
         // zero-length field and for tagged unions to only print the selected arm
-        let manual_debug =
-            message.vla_non_recursive().is_some() || (!message.manual_print() && has_tagged_unions);
-        let derive_debug = !message.manual_print() && !manual_debug;
+        let debug = !message.manual_print();
+        let manual_debug = debug && (message.vla_non_recursive().is_some() || has_tagged_unions);
+        let derive_debug = debug && !manual_debug;
         let partial_eq = !message.manual_print() && message.vla(self.parser).is_none();
         let manual_partial_eq = partial_eq && has_tagged_unions;
         let derive_partial_eq = partial_eq && !manual_partial_eq;
@@ -1383,9 +1383,9 @@ impl ApiGenContext<'_> {
         let has_tagged_unions = has_tagged_unions(t.fields());
         // Debug is implemented manually for types with a VLA to avoid printing the zero-length
         // field and for tagged unions to only print the selected arm
-        let manual_debug =
-            t.vla_non_recursive().is_some() || (!t.manual_print() && has_tagged_unions);
-        let derive_debug = !t.manual_print() && !manual_debug;
+        let debug = !t.manual_print();
+        let manual_debug = debug && (t.vla_non_recursive().is_some() || has_tagged_unions);
+        let derive_debug = debug && !manual_debug;
         let partial_eq = !t.manual_print() && t.vla(self.parser).is_none();
         let manual_partial_eq = partial_eq && has_tagged_unions;
         let derive_partial_eq = partial_eq && !manual_partial_eq;
