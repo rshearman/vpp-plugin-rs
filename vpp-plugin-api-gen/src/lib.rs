@@ -110,6 +110,10 @@ fn to_upper_camel_case(s: &str) -> String {
         .collect()
 }
 
+fn has_tagged_unions(fields: &[Field]) -> bool {
+    fields.iter().any(|field| field.tagged_union().is_some())
+}
+
 /// Name of the Rust constant for an enumflag variant
 ///
 /// For ease of use, the enumflag name is stripped off the front of each flag, since this is
@@ -416,26 +420,214 @@ impl ApiGenContext<'_> {
         }
         writeln!(
             self.output_file,
-            "        f.debug_struct(\"{}\")",
+            "        let mut builder = f.debug_struct(\"{}\");",
             upper_camel_name
         )?;
+        let mut omitted = false;
         for (i, field) in fields.iter().enumerate() {
-            if printed(i, field) {
+            if !printed(i, field) {
+                omitted = true;
+            } else if let Some(tagged_union) = field.tagged_union() {
+                // Only print the arm selected by the discriminator
                 writeln!(
                     self.output_file,
-                    "            .field(\"{}\", &tmp_{})",
+                    "        match tmp_{} {{",
+                    tagged_union.discriminator
+                )?;
+                for arm in &tagged_union.arms {
+                    writeln!(
+                        self.output_file,
+                        "            // SAFETY: the arm is selected by the discriminator, and any initialised bit pattern is valid for it"
+                    )?;
+                    writeln!(
+                        self.output_file,
+                        "            {} => builder.field(\"{}\", &unsafe {{ tmp_{}.{} }}),",
+                        case_path(tagged_union, &arm.case),
+                        field.name,
+                        field.name,
+                        arm.field.name
+                    )?;
+                }
+                writeln!(
+                    self.output_file,
+                    "            #[allow(unreachable_patterns)]"
+                )?;
+                writeln!(
+                    self.output_file,
+                    "            _ => builder.field(\"{}\", &format_args!(\"<unknown>\")),",
+                    field.name
+                )?;
+                writeln!(self.output_file, "        }};")?;
+            } else {
+                writeln!(
+                    self.output_file,
+                    "        builder.field(\"{}\", &tmp_{});",
                     field.name, field.name
                 )?;
             }
         }
-        if fields
-            .iter()
-            .enumerate()
-            .all(|(i, field)| printed(i, field))
-        {
-            writeln!(self.output_file, "            .finish()")?;
+        if omitted {
+            writeln!(self.output_file, "        builder.finish_non_exhaustive()")?;
         } else {
-            writeln!(self.output_file, "            .finish_non_exhaustive()")?;
+            writeln!(self.output_file, "        builder.finish()")?;
+        }
+        writeln!(self.output_file, "    }}")?;
+        writeln!(self.output_file, "}}")?;
+        writeln!(self.output_file)?;
+
+        Ok(())
+    }
+
+    /// Generate a PartialEq implementation that, for tagged unions, compares only the arm
+    /// selected by the discriminator
+    fn generate_partial_eq_trait(&mut self, name: &str, fields: &[Field]) -> Result<(), Error> {
+        let upper_camel_name = to_upper_camel_case(name);
+
+        writeln!(
+            self.output_file,
+            "impl PartialEq for {} {{",
+            upper_camel_name
+        )?;
+        writeln!(
+            self.output_file,
+            "    fn eq(&self, other: &Self) -> bool {{"
+        )?;
+        // Compare non-union fields first so that the discriminators are known to be equal
+        // before the union arms are compared. Variable-length fields are zero-length so are
+        // skipped. Fields are copied out of the packed struct using blocks, since references
+        // can't be taken to them.
+        let fixed_fields = || {
+            fields
+                .iter()
+                .filter(|field| !matches!(field.size, Some(FieldSize::Variable(_))))
+        };
+        let mut first = true;
+        for field in fixed_fields().filter(|field| field.tagged_union().is_none()) {
+            writeln!(
+                self.output_file,
+                "        {}({{ self.{} }} == {{ other.{} }})",
+                if first { "" } else { "&& " },
+                field.name,
+                field.name
+            )?;
+            first = false;
+        }
+        for (field, tagged_union) in
+            fixed_fields().filter_map(|field| Some((field, field.tagged_union()?)))
+        {
+            writeln!(
+                self.output_file,
+                "        {}match self.{} {{",
+                if first { "" } else { "&& " },
+                tagged_union.discriminator
+            )?;
+            for arm in &tagged_union.arms {
+                writeln!(
+                    self.output_file,
+                    "            // SAFETY: the arm is selected by the discriminator, and any initialised bit pattern is valid for it"
+                )?;
+                writeln!(
+                    self.output_file,
+                    "            {} => {{ let (a, b) = unsafe {{ (self.{}.{}, other.{}.{}) }}; a == b }},",
+                    case_path(tagged_union, &arm.case),
+                    field.name,
+                    arm.field.name,
+                    field.name,
+                    arm.field.name
+                )?;
+            }
+            // There's no way of knowing which bytes of the union are meaningful, so treat as
+            // not equal
+            writeln!(
+                self.output_file,
+                "            #[allow(unreachable_patterns)]"
+            )?;
+            writeln!(self.output_file, "            _ => false,")?;
+            writeln!(self.output_file, "        }}")?;
+            first = false;
+        }
+        if first {
+            writeln!(self.output_file, "        true")?;
+        }
+        writeln!(self.output_file, "    }}")?;
+        writeln!(self.output_file, "}}")?;
+        writeln!(self.output_file)?;
+
+        Ok(())
+    }
+
+    /// Generate a Default implementation
+    ///
+    /// For messages, the message ID is filled in. Tagged unions are zero-initialised, so that
+    /// all bytes are initialised whichever arm is later read, and then the arm selected by the
+    /// default value of the discriminator (if any) is set to its default value.
+    fn generate_default_trait(
+        &mut self,
+        name: &str,
+        fields: &[Field],
+        is_message: bool,
+    ) -> Result<(), Error> {
+        let upper_camel_name = to_upper_camel_case(name);
+        let has_tagged_unions = has_tagged_unions(fields);
+
+        writeln!(self.output_file, "impl Default for {} {{", upper_camel_name)?;
+        writeln!(self.output_file, "    fn default() -> Self {{")?;
+        if has_tagged_unions {
+            writeln!(self.output_file, "        let mut value = Self {{")?;
+        } else {
+            writeln!(self.output_file, "        Self {{")?;
+        }
+        for field in fields {
+            if is_message && field.name == "_vl_msg_id" {
+                writeln!(self.output_file, "            _vl_msg_id: Self::msg_id(),")?;
+            } else if field.tagged_union().is_some() {
+                writeln!(
+                    self.output_file,
+                    "            // SAFETY: all-zero bytes are valid for a union"
+                )?;
+                writeln!(
+                    self.output_file,
+                    "            {}: unsafe {{ ::std::mem::zeroed() }},",
+                    field.name,
+                )?;
+            } else {
+                writeln!(
+                    self.output_file,
+                    "            {}: Default::default(),",
+                    field.name,
+                )?;
+            }
+        }
+        if has_tagged_unions {
+            writeln!(self.output_file, "        }};")?;
+            for field in fields {
+                let Some(tagged_union) = field.tagged_union() else {
+                    continue;
+                };
+                writeln!(
+                    self.output_file,
+                    "        match value.{} {{",
+                    tagged_union.discriminator
+                )?;
+                for arm in &tagged_union.arms {
+                    writeln!(
+                        self.output_file,
+                        "            {} => value.{}.{} = Default::default(),",
+                        case_path(tagged_union, &arm.case),
+                        field.name,
+                        arm.field.name
+                    )?;
+                }
+                writeln!(
+                    self.output_file,
+                    "            #[allow(unreachable_patterns)]"
+                )?;
+                writeln!(self.output_file, "            _ => {{}}")?;
+                writeln!(self.output_file, "        }}")?;
+            }
+            writeln!(self.output_file, "        value")?;
+        } else {
+            writeln!(self.output_file, "        }}")?;
         }
         writeln!(self.output_file, "    }}")?;
         writeln!(self.output_file, "}}")?;
@@ -448,14 +640,21 @@ impl ApiGenContext<'_> {
     ///
     /// Types containing a string can't be `Copy` or `Clone`, since `ApiString` isn't, because a
     /// copy would only contain the length of the string, not its contents.
-    fn generate_derives(&mut self, opt_derives: &str, contains_string: bool) -> Result<(), Error> {
-        let derives = if contains_string {
-            opt_derives.trim_end_matches(", ").to_string()
-        } else {
-            format!("{}Copy, Clone", opt_derives)
-        };
+    fn generate_derives(
+        &mut self,
+        opt_derives: &[(&str, bool)],
+        contains_string: bool,
+    ) -> Result<(), Error> {
+        let mut derives: Vec<&str> = opt_derives
+            .iter()
+            .filter(|(_, derive)| *derive)
+            .map(|(name, _)| *name)
+            .collect();
+        if !contains_string {
+            derives.extend(["Copy", "Clone"]);
+        }
         if !derives.is_empty() {
-            writeln!(self.output_file, "#[derive({})]", derives)?;
+            writeln!(self.output_file, "#[derive({})]", derives.join(", "))?;
         }
         Ok(())
     }
@@ -509,15 +708,21 @@ impl ApiGenContext<'_> {
             message.vla(self.parser),
             Some((_, CountDescriptor::String(_)))
         );
-        let opt_derives =
-            if message.manual_print() || message.vla_non_recursive().is_some() || contains_string {
-                ""
-            } else if message.vla(self.parser).is_some() {
-                "Debug, "
-            } else {
-                "Debug, PartialEq, "
-            };
-        self.generate_derives(opt_derives, contains_string)?;
+        let has_tagged_unions = has_tagged_unions(message.fields());
+        // Debug is implemented manually for messages with a VLA to avoid printing the
+        // zero-length field, for strings since they can't be copied, which the derived
+        // implementation requires for packed types, and for tagged unions to only print the
+        // selected arm
+        let manual_debug = message.vla_non_recursive().is_some()
+            || (!message.manual_print() && (contains_string || has_tagged_unions));
+        let derive_debug = !message.manual_print() && !manual_debug;
+        let partial_eq = !message.manual_print() && message.vla(self.parser).is_none();
+        let manual_partial_eq = partial_eq && has_tagged_unions;
+        let derive_partial_eq = partial_eq && !manual_partial_eq;
+        self.generate_derives(
+            &[("Debug", derive_debug), ("PartialEq", derive_partial_eq)],
+            contains_string,
+        )?;
         writeln!(self.output_file, "#[repr(C, packed)]")?;
         writeln!(self.output_file, "pub struct {} {{", upper_camel_name)?;
         for field in message.fields() {
@@ -605,33 +810,15 @@ impl ApiGenContext<'_> {
         writeln!(self.output_file, "}}")?;
         writeln!(self.output_file)?;
 
-        writeln!(self.output_file, "impl Default for {} {{", upper_camel_name)?;
-        writeln!(self.output_file, "    fn default() -> Self {{")?;
-        writeln!(self.output_file, "        Self {{")?;
-        for field in message.fields() {
-            if field.name == "_vl_msg_id" {
-                writeln!(self.output_file, "            _vl_msg_id: Self::msg_id(),")?;
-            } else {
-                writeln!(
-                    self.output_file,
-                    "            {}: Default::default(),",
-                    field.name,
-                )?;
-            }
-        }
-        writeln!(self.output_file, "        }}")?;
-        writeln!(self.output_file, "    }}")?;
-        writeln!(self.output_file, "}}")?;
-        writeln!(self.output_file)?;
+        self.generate_default_trait(message.name(), message.fields(), true)?;
 
         self.generate_endian_swap(message.name(), EndianSwapInput::Fields(message.fields()))?;
 
-        // Manually implement fmt::Debug so that the zero-length (but actually variable-length)
-        // field isn't printed to avoid misleading anyone looking at the output, or because the
-        // message contains a string and so can't be copied, which the derived implementation
-        // requires for packed types
-        if message.vla_non_recursive().is_some() || (contains_string && !message.manual_print()) {
+        if manual_debug {
             self.generate_debug_trait(message.name(), message.fields(), contains_string)?;
+        }
+        if manual_partial_eq {
+            self.generate_partial_eq_trait(message.name(), message.fields())?;
         }
 
         writeln!(
@@ -1235,14 +1422,26 @@ impl ApiGenContext<'_> {
         let upper_camel_name = to_upper_camel_case(t.name());
 
         let contains_string = matches!(t.vla(self.parser), Some((_, CountDescriptor::String(_))));
-        let opt_derives = if t.manual_print() {
-            ""
-        } else if t.vla_non_recursive().is_some() || contains_string {
-            "Default, "
-        } else {
-            "Debug, PartialEq, Default, "
-        };
-        self.generate_derives(opt_derives, contains_string)?;
+        let has_tagged_unions = has_tagged_unions(t.fields());
+        // Debug is implemented manually for types with a VLA to avoid printing the zero-length
+        // field, for strings since they can't be copied, which the derived implementation
+        // requires for packed types, and for tagged unions to only print the selected arm
+        let manual_debug = t.vla_non_recursive().is_some()
+            || (!t.manual_print() && (contains_string || has_tagged_unions));
+        let derive_debug = !t.manual_print() && !manual_debug;
+        let partial_eq = !t.manual_print() && t.vla(self.parser).is_none();
+        let manual_partial_eq = partial_eq && has_tagged_unions;
+        let derive_partial_eq = partial_eq && !manual_partial_eq;
+        let manual_default = !t.manual_print() && has_tagged_unions;
+        let derive_default = !t.manual_print() && !manual_default;
+        self.generate_derives(
+            &[
+                ("Debug", derive_debug),
+                ("PartialEq", derive_partial_eq),
+                ("Default", derive_default),
+            ],
+            contains_string,
+        )?;
         writeln!(self.output_file, "#[repr(C, packed)]")?;
         writeln!(self.output_file, "pub struct {} {{", upper_camel_name)?;
         for field in t.fields() {
@@ -1260,12 +1459,14 @@ impl ApiGenContext<'_> {
             writeln!(self.output_file)?;
         }
 
-        // Manually implement fmt::Debug so that the zero-length (but actually variable-length)
-        // field isn't printed to avoid misleading anyone looking at the output, or because the
-        // type contains a string and so can't be copied, which the derived implementation
-        // requires for packed types
-        if t.vla_non_recursive().is_some() || (contains_string && !t.manual_print()) {
+        if manual_debug {
             self.generate_debug_trait(t.name(), t.fields(), contains_string)?;
+        }
+        if manual_partial_eq {
+            self.generate_partial_eq_trait(t.name(), t.fields())?;
+        }
+        if manual_default {
+            self.generate_default_trait(t.name(), t.fields(), false)?;
         }
 
         if !t.manual_endian() {
