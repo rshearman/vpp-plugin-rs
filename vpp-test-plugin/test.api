@@ -2,15 +2,15 @@ option version = "1.0.0";
 
 import "test_types.api";
 
-// Union referencing imported case
+// Union referencing indirectly imported case
 union test_address_union2 {
-  vl_api_test_ip4_address_t ip4 [case=TEST_ADDRESS_IP4];
-  vl_api_test_ip6_address_t ip6 [case=TEST_ADDRESS_IP6];
+  vl_api_test_ip4_address_t ip4 [case=ADDRESS_IP4];
+  vl_api_test_ip6_address_t ip6 [case=ADDRESS_IP6];
 };
 
-// Referencing union with imported discriminator
+// Referencing union with indirectly imported discriminator
 typedef test_address2 {
-  vl_api_test_address_family_t af;
+  vl_api_address_family_t af;
   vl_api_test_address_union2_t un [discriminator=af];
 };
 
@@ -119,7 +119,25 @@ autoreply autoendian define test_union_direct
   u32 client_index;
   u32 context;
   vl_api_test_address_union2_t un [discriminator=af];
-  vl_api_test_address_family_t af;
+  vl_api_address_family_t af;
+};
+
+// Types from ip_types.api with well-known implementations generated
+autoreply autoendian define test_ip_types
+{
+  u32 client_index;
+  u32 context;
+  vl_api_ip4_address_t ip4;
+  vl_api_ip6_address_t ip6;
+  vl_api_address_t addr4;
+  vl_api_address_t addr6;
+  vl_api_ip4_prefix_t ip4_prefix;
+  vl_api_ip6_prefix_t ip6_prefix;
+  vl_api_prefix_t prefix;
+  vl_api_address_with_prefix_t addr_with_prefix;
+  vl_api_ip4_address_with_prefix_t ip4_addr_with_prefix;
+  vl_api_ip6_address_with_prefix_t ip6_addr_with_prefix;
+  vl_api_mprefix_t mprefix;
 };
 
 autoendian define test_variable_array_u32 {

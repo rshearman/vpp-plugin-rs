@@ -1,5 +1,7 @@
 option version = "1.0.0";
 
+import "vnet/ip/ip_types.api";
+
 enum test_node_type {
   TEST_NODE_TYPE_X1,
   TEST_NODE_TYPE_X4,
@@ -17,20 +19,10 @@ manual_print typedef u8 test_ip4_address[4];
 typedef vl_api_test_ip4_address_t test_ip4_address2;
 manual_print typedef u8 test_ip6_address[16];
 
-enum test_address_family : u8 {
-  TEST_ADDRESS_IP4 = 0,
-  TEST_ADDRESS_IP6,
-};
-
-/* Test union */
-union test_address_union {
-  vl_api_test_ip4_address_t ip4 [case=TEST_ADDRESS_IP4];
-  vl_api_test_ip6_address_t ip6 [case=TEST_ADDRESS_IP6];
-};
-
+// Tagged union with imported discriminator and union, without manual_print
 typedef test_address {
-  vl_api_test_address_family_t af;
-  vl_api_test_address_union_t un [discriminator=af];
+  vl_api_address_family_t af;
+  vl_api_address_union_t un [discriminator=af];
 };
 
 typedef test_variable_array_typedef {
