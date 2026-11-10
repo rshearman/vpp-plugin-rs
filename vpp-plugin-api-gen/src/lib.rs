@@ -156,6 +156,11 @@ impl ApiParserRustExt for ApiParser {
                 } else {
                     to_upper_camel_case(t)
                 }
+            } else if r#type == "bool" {
+                // A Rust bool must only ever hold 0 or 1, but nothing stops the sender of a
+                // message from putting any other value in, so use u8 to avoid undefined
+                // behaviour when such a message is received
+                "u8".to_string()
             } else {
                 r#type.to_string()
             },
