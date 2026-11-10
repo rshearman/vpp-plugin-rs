@@ -209,7 +209,7 @@ impl example_api::Handlers for ApiHandler {
     ) -> Result<vlibapi::Message<example_api::ExampleEnableDisableReply>, i32> {
         let sw_if_index = SwIfIndex::new(mp.sw_if_index);
 
-        if mp.enable {
+        if mp.enable != 0 {
             EXAMPLE_FEAT.enable(vm, sw_if_index, ())?;
         } else {
             EXAMPLE_FEAT.disable(vm, sw_if_index)?;

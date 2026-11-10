@@ -846,14 +846,14 @@ impl test_api::Handlers for ApiHandler {
 
         match mp.node_type {
             TEST_NODE_TYPE_X1 => {
-                if mp.enable {
+                if mp.enable != 0 {
                     TEST_FEAT.enable(vm, sw_if_index, ())?;
                 } else {
                     TEST_FEAT.disable(vm, sw_if_index)?;
                 }
             }
             TEST_NODE_TYPE_X4 => {
-                if mp.enable {
+                if mp.enable != 0 {
                     TESTX4_FEAT.enable(vm, sw_if_index, ())?;
                 } else {
                     TESTX4_FEAT.disable(vm, sw_if_index)?;
@@ -1124,7 +1124,7 @@ impl test_api::Handlers for ApiHandler {
         vm: &vlib::BarrierHeldMainRef,
         mp: &test_api::TestBarrierRwLock,
     ) -> Result<vlibapi::Message<test_api::TestBarrierRwLockReply>, i32> {
-        if mp.enable {
+        if mp.enable != 0 {
             *TEST_NODE.udp_src_port_deny_policy.write(vm) = Some(7);
         } else {
             *TEST_NODE.udp_src_port_deny_policy.write(vm) = None;
@@ -1140,7 +1140,7 @@ impl test_api::Handlers for ApiHandler {
         // node which doesn't
         TEST_PROCESS_NODE
             .channel_sender()
-            .send(ProcessMessage::SetDenyPolicy(mp.enable.then_some(7)))
+            .send(ProcessMessage::SetDenyPolicy((mp.enable != 0).then_some(7)))
             .map_err(|_| VNET_ERR_INVALID_ARGUMENT)?;
         Ok(Default::default())
     }
@@ -1149,7 +1149,7 @@ impl test_api::Handlers for ApiHandler {
         _vm: &vlib::BarrierHeldMainRef,
         mp: &test_api::TestProcessNode,
     ) -> Result<vlibapi::Message<test_api::TestProcessNodeReply>, i32> {
-        if mp.enable {
+        if mp.enable != 0 {
             TEST_PROCESS_NODE
                 .channel_sender()
                 .send(ProcessMessage::Enable(Ipv4Addr::from_octets(mp.dest.0)))
