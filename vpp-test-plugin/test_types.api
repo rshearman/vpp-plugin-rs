@@ -28,7 +28,7 @@ union test_address_union {
   vl_api_test_ip6_address_t ip6 [case=TEST_ADDRESS_IP6];
 };
 
-manual_print typedef test_address {
+typedef test_address {
   vl_api_test_address_family_t af;
   vl_api_test_address_union_t un [discriminator=af];
 };

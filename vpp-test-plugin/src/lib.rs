@@ -43,8 +43,8 @@ use vpp_plugin::{
 
 use crate::test_api::TestProcessErrorCounter;
 use crate::test_types_api::{
-    TEST_ADDRESS_IP4, TEST_ADDRESS_IP6, TEST_NODE_TYPE_X1, TEST_NODE_TYPE_X4, TestAddressUnion,
-    TestIp4Address,
+    TEST_ADDRESS_IP4, TEST_ADDRESS_IP6, TEST_NODE_TYPE_X1, TEST_NODE_TYPE_X4, TestIp4Address,
+    TestIp6Address,
 };
 
 mod test_api {
@@ -749,92 +749,6 @@ impl PartialEq for test_types_api::TestIp6Address {
     }
 }
 
-impl std::fmt::Debug for test_types_api::TestAddress {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        unsafe {
-            if self.af == TEST_ADDRESS_IP4 {
-                self.un.ip4.fmt(f)
-            } else if self.af == TEST_ADDRESS_IP6 {
-                self.un.ip6.fmt(f)
-            } else {
-                write!(f, "Unknown af {:?}", self.af)
-            }
-        }
-    }
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for test_types_api::TestAddress {
-    fn default() -> Self {
-        Self {
-            af: Default::default(),
-            un: TestAddressUnion {
-                ip4: TestIp4Address::default(),
-            },
-        }
-    }
-}
-
-impl PartialEq for test_types_api::TestAddress {
-    fn eq(&self, other: &Self) -> bool {
-        if self.af != other.af {
-            return false;
-        }
-        unsafe {
-            if self.af == TEST_ADDRESS_IP4 {
-                self.un.ip4 == other.un.ip4
-            } else if self.af == TEST_ADDRESS_IP6 {
-                self.un.ip6 == other.un.ip6
-            } else {
-                false
-            }
-        }
-    }
-}
-
-impl std::fmt::Debug for test_api::TestAddress2 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        unsafe {
-            if self.af == TEST_ADDRESS_IP4 {
-                self.un.ip4.fmt(f)
-            } else if self.af == TEST_ADDRESS_IP6 {
-                self.un.ip6.fmt(f)
-            } else {
-                write!(f, "Unknown af {:?}", self.af)
-            }
-        }
-    }
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for test_api::TestAddress2 {
-    fn default() -> Self {
-        Self {
-            af: Default::default(),
-            un: test_api::TestAddressUnion2 {
-                ip4: TestIp4Address::default(),
-            },
-        }
-    }
-}
-
-impl PartialEq for test_api::TestAddress2 {
-    fn eq(&self, other: &Self) -> bool {
-        if self.af != other.af {
-            return false;
-        }
-        unsafe {
-            if self.af == TEST_ADDRESS_IP4 {
-                self.un.ip4 == other.un.ip4
-            } else if self.af == TEST_ADDRESS_IP6 {
-                self.un.ip6 == other.un.ip6
-            } else {
-                false
-            }
-        }
-    }
-}
-
 struct ApiHandler;
 
 impl test_api::Handlers for ApiHandler {
@@ -997,6 +911,34 @@ impl test_api::Handlers for ApiHandler {
             } else {
                 return Err(VNET_ERR_INVALID_ARGUMENT.into());
             }
+        }
+        Ok(Default::default())
+    }
+
+    fn test_union_direct(
+        _vm: &vlib::BarrierHeldMainRef,
+        mp: &test_api::TestUnionDirect,
+    ) -> Result<vlibapi::Message<test_api::TestUnionDirectReply>, i32> {
+        println!("test_union_direct({:?})", mp);
+        // Exercise the generated Default and PartialEq for a message containing a tagged union.
+        // The union is zero-initialised by Default, so setting a different discriminator than
+        // the default one and comparing is fine.
+        let mut expected = test_api::TestUnionDirect {
+            client_index: mp.client_index,
+            context: mp.context,
+            af: mp.af,
+            ..Default::default()
+        };
+        if mp.af == TEST_ADDRESS_IP4 {
+            expected.un.ip4 = TestIp4Address([1, 2, 3, 4]);
+        } else if mp.af == TEST_ADDRESS_IP6 {
+            expected.un.ip6 =
+                TestIp6Address([1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0]);
+        } else {
+            return Err(VNET_ERR_INVALID_ARGUMENT.into());
+        }
+        if *mp != expected {
+            return Err(VNET_ERR_INVALID_ARGUMENT.into());
         }
         Ok(Default::default())
     }
@@ -1480,5 +1422,92 @@ mod tests {
         assert_eq!(unsafe { value.un.tx }, (-0x01020304i32).to_be());
         unsafe { value.endian_swap(false) };
         assert_eq!(unsafe { value.un.tx }, -0x01020304);
+    }
+
+    #[test]
+    fn debug_enumflag_selects_arm() {
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion { a: 5 },
+            flags: TestUnionFlags::A,
+        };
+        assert_eq!(
+            format!("{:?}", value),
+            "TestFlagsTagged { un: 5, flags: A }"
+        );
+
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion {
+                c: TestType { field1: 6 },
+            },
+            flags: TestUnionFlags::C,
+        };
+        assert_eq!(
+            format!("{:?}", value),
+            "TestFlagsTagged { un: TestType { field1: 6 }, flags: C }"
+        );
+
+        // A combination of flags doesn't select any arm
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion { a: 5 },
+            flags: TestUnionFlags::A | TestUnionFlags::B,
+        };
+        assert_eq!(
+            format!("{:?}", value),
+            "TestFlagsTagged { un: <unknown>, flags: A | B }"
+        );
+
+        let value = TestDirTagged {
+            dir: TestDir2::TX,
+            un: TestDirUnion { tx: -7 },
+        };
+        assert_eq!(format!("{:?}", value), "TestDirTagged { dir: TX, un: -7 }");
+    }
+
+    #[test]
+    fn partial_eq_enumflag_compares_selected_arm() {
+        // b overlaps the start of a, so set a to differ in the bytes outside of b
+        let mut x = TestFlagsTagged {
+            un: TestFlagsUnion { a: u32::MAX },
+            flags: TestUnionFlags::B,
+        };
+        let mut y = TestFlagsTagged {
+            un: TestFlagsUnion { a: 0 },
+            flags: TestUnionFlags::B,
+        };
+        x.un.b = 7;
+        y.un.b = 7;
+        assert_eq!(x, y);
+        y.un.b = 8;
+        assert_ne!(x, y);
+
+        // The discriminators must match
+        let x = TestDirTagged {
+            dir: TestDir2::TX,
+            un: TestDirUnion { rx: 0 },
+        };
+        let mut y = x;
+        assert_eq!(x, y);
+        y.dir = TestDir2::RX;
+        assert_ne!(x, y);
+
+        // Without a selected arm there's no way of knowing which bytes are meaningful
+        let x = TestFlagsTagged {
+            un: TestFlagsUnion { a: 0 },
+            flags: TestUnionFlags::A | TestUnionFlags::B,
+        };
+        assert_ne!(x, x);
+    }
+
+    #[test]
+    fn default_enumflag() {
+        let value = TestFlagsTagged::default();
+        let flags = value.flags;
+        assert_eq!(flags, TestUnionFlags::empty());
+        assert_eq!(unsafe { value.un.a }, 0);
+
+        let value = TestDirTagged::default();
+        let dir = value.dir;
+        assert_eq!(dir, TestDir2::empty());
+        assert_eq!(unsafe { value.un.rx }, 0);
     }
 }

@@ -18,7 +18,7 @@ union test_flags_union {
 };
 
 // Local enumflag discriminator appearing after the union
-manual_print typedef test_flags_tagged {
+typedef test_flags_tagged {
   vl_api_test_flags_union_t un [discriminator=flags];
   vl_api_test_union_flags_t flags;
 };
@@ -30,7 +30,7 @@ union test_dir_union {
 };
 
 // Imported enumflag discriminator appearing before the union
-manual_print typedef test_dir_tagged {
+typedef test_dir_tagged {
   vl_api_test_dir2_t dir;
   vl_api_test_dir_union_t un [discriminator=dir];
 };
