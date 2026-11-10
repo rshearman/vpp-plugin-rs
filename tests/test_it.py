@@ -646,6 +646,28 @@ class IntegrationTestCase(IntegrationTestBase):
             },
         )
 
+    def test_api_union_direct(self):
+        """API using tagged union directly in message"""
+        test_address_family = VppEnum.vl_api_test_address_family_t
+        self.vapi.api(
+            self.vapi.papi.test_union_direct,
+            {
+                'af': test_address_family.TEST_ADDRESS_IP4,
+                'un': {
+                    'ip4': bytes([1, 2, 3, 4]),
+                },
+            },
+        )
+        self.vapi.api(
+            self.vapi.papi.test_union_direct,
+            {
+                'af': test_address_family.TEST_ADDRESS_IP6,
+                'un': {
+                    'ip6': bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0]),
+                },
+            },
+        )
+
     def test_api_vla(self):
         """API using variable length arrays"""
         reply = self.vapi.api(
