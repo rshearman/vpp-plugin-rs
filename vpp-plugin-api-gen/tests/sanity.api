@@ -109,6 +109,8 @@ enum address_family : u8 {
     ADDRESS_IP6,
 };
 
+// Test address comment 1
+/* Test address comment 2 */
 manual_print typedef address {
     vl_api_address_family_t af;
     vl_api_address_union_t un [discriminator=af];
@@ -121,6 +123,8 @@ autoendian autoreply define union_message
     vl_api_address_t address;
 };
 
+// Test comment 1
+/* Test comment 2 */
 typedef module_version {
     u8 dummy;
 };
@@ -144,6 +148,8 @@ autoendian autoreply define field_option {
     bool keepalive[default=true];
 };
 
+// Test comment 1
+/* Test comment 2 */
 define ip_table_dump {
     u32 client_index;
     u32 context;

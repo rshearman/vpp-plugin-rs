@@ -1,4 +1,5 @@
 {
+    "module": "sanity",
     "types": [
         [
             "address",
@@ -12,14 +13,20 @@
                 {
                     "discriminator": "af"
                 }
-            ]
+            ],
+            {
+                "comment": "/* Test address comment 2 */"
+            }
         ],
         [
             "module_version",
             [
                 "u8",
                 "dummy"
-            ]
+            ],
+            {
+                "comment": "/* Test comment 2 */"
+            }
         ]
     ],
     "messages": [
@@ -559,7 +566,8 @@
             ],
             {
                 "crc": "0x51077d14",
-                "options": {}
+                "options": {},
+                "comment": "/* Test comment 2 */"
             }
         ],
         [

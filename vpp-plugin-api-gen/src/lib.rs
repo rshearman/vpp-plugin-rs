@@ -62,7 +62,7 @@ use crate::{
     json::generate_json,
     parser::{
         Alias, ApiParser, CountDescriptor, Enum, Field, FieldSize, Message, TaggedUnion, Type,
-        TypeDetails, Union,
+        TypeDetails, Union, module_name,
     },
     well_known::{WellKnownAlias, WellKnownType},
 };
@@ -250,13 +250,7 @@ impl Builder {
             println!("cargo:rerun-if-changed={}", input_file);
         }
 
-        // Get file name without path
-        let input_file_name = Path::new(input_file).iter().next_back().unwrap();
-        let module = Path::new(input_file_name)
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let module = module_name(Path::new(input_file));
 
         DirBuilder::new().recursive(true).create(output_dir)?;
         let output_file = Path::new(output_dir).join(format!("{}_api.rs", module));
@@ -327,6 +321,16 @@ struct ApiGenContext<'a> {
 }
 
 impl ApiGenContext<'_> {
+    /// Generate a doc attribute from an API file comment
+    fn generate_doc_comment(&mut self, comment: Option<&str>) -> Result<(), Error> {
+        if let Some(comment) = comment {
+            // Debug formatting produces a valid Rust string literal, escaping quotes,
+            // backslashes (e.g. in "\brief") and control characters
+            writeln!(self.output_file, "#[doc = {:?}]", comment)?;
+        }
+        Ok(())
+    }
+
     fn generate_field(&mut self, field: &Field) -> Result<(), Error> {
         if field.r#type == "string" {
             match &field.size {
@@ -662,13 +666,7 @@ impl ApiGenContext<'_> {
     fn generate_message(&mut self, id: usize, message: &Message) -> Result<(), Error> {
         let upper_camel_name = to_upper_camel_case(message.name());
 
-        if let Some(comment) = message.comment() {
-            writeln!(
-                self.output_file,
-                "#[doc = \"{}\"]",
-                comment.replace("\"", "\\\"")
-            )?;
-        }
+        self.generate_doc_comment(message.comment())?;
         let has_tagged_unions = has_tagged_unions(message.fields());
         // Debug is implemented manually for messages with a VLA to avoid printing the
         // zero-length field and for tagged unions to only print the selected arm
@@ -1149,13 +1147,7 @@ impl ApiGenContext<'_> {
     fn generate_union(&mut self, un: &Union) -> Result<(), Error> {
         let upper_camel_name = to_upper_camel_case(un.name());
 
-        if let Some(comment) = un.comment() {
-            writeln!(
-                self.output_file,
-                "#[doc = \"{}\"]",
-                comment.replace("\"", "\\\"")
-            )?;
-        }
+        self.generate_doc_comment(un.comment())?;
         writeln!(self.output_file, "#[derive(Copy, Clone)]",)?;
         writeln!(self.output_file, "#[repr(C, packed)]")?;
         writeln!(self.output_file, "pub union {} {{", upper_camel_name)?;
@@ -1406,6 +1398,7 @@ impl ApiGenContext<'_> {
         let derive_partial_eq = partial_eq && !manual_partial_eq;
         let manual_default = !manual_print && has_tagged_unions;
         let derive_default = !manual_print && !manual_default;
+        self.generate_doc_comment(t.comment())?;
         writeln!(
             self.output_file,
             "#[derive({}{}{}Copy, Clone)]",

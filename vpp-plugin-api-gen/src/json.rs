@@ -13,6 +13,7 @@ use crate::parser::{
 
 #[derive(Debug, Serialize)]
 struct ApiFile<'a> {
+    module: String,
     types: Vec<JsonTypeEntry>,
     messages: &'a [Message],
     unions: Vec<JsonTypeEntry>,
@@ -169,6 +170,11 @@ impl Serialize for JsonAlias {
 struct JsonTypeEntry(String, Arc<TypeEntry>);
 
 #[derive(Debug, Serialize)]
+struct JsonTypeInfo<'a> {
+    comment: &'a str,
+}
+
+#[derive(Debug, Serialize)]
 struct JsonEnumInfo<'a> {
     enumtype: &'a str,
 }
@@ -179,11 +185,17 @@ impl Serialize for JsonTypeEntry {
         S: serde::Serializer,
     {
         match &self.1.details {
-            TypeDetails::TypedefBlock { fields, .. } => {
-                let mut seq = serializer.serialize_seq(Some(1 + fields.len()))?;
+            TypeDetails::TypedefBlock {
+                fields, comment, ..
+            } => {
+                let len = 1 + fields.len() + usize::from(comment.is_some());
+                let mut seq = serializer.serialize_seq(Some(len))?;
                 seq.serialize_element(&self.0)?;
                 for field in fields {
                     seq.serialize_element(field)?;
+                }
+                if let Some(comment) = comment {
+                    seq.serialize_element(&JsonTypeInfo { comment })?;
                 }
                 seq.end()
             }
@@ -330,6 +342,7 @@ pub(crate) fn generate_json(parser: &ApiParser) -> Result<String, serde_json::Er
         })
         .collect();
     let api_file = ApiFile {
+        module: parser.module().to_string(),
         types,
         messages: parser.messages(),
         unions,
