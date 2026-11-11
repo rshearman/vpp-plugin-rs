@@ -24,6 +24,7 @@ pub enum Statement {
         options: Vec<OptionStatement>,
         fields: Vec<Field>,
         flags: Vec<Flag>,
+        comment: Option<String>,
     },
     Typedef {
         field: Field,
@@ -96,12 +97,14 @@ impl Statement {
         name: String,
         block_statements: Vec<BlockStatement>,
         flags: Vec<Flag>,
+        comment: Option<String>,
     ) -> Self {
         Self::TypedefBlock {
             name,
             options: options_from_block_statements(&block_statements),
             fields: fields_from_block_statements(block_statements),
             flags,
+            comment,
         }
     }
 
@@ -651,8 +654,10 @@ peg::parser! {
             = s:$(flag_list() _) {? at_most_one_newline(s) }
 
         rule typedef() -> Statement
-            = f:flag_list() _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, f) }
-            / _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, vec![]) }
+            = c:last_comment() &flags_comment_gap() f:flag_list() _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, f, Some(c)) }
+            / f:flag_list() _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, f, None) }
+            / c:last_comment() comment_gap() "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, vec![], Some(c)) }
+            / _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, vec![], None) }
             / f:flag_list() _ "typedef" __ d:declaration() { Statement::typedef(d, f) }
             / _ "typedef" __ d:declaration() { Statement::typedef(d, vec![]) }
 
@@ -843,6 +848,17 @@ pub enum Error {
     TaggedUnionDuplicateCase { union: String, case: String },
 }
 
+/// Derive the module name from the path of an API file
+///
+/// This matches vppapigen: the final extension of the file name is stripped and any remaining
+/// dots are replaced with underscores, e.g. `foo/bar.api` becomes `bar`.
+pub(crate) fn module_name(path: &Path) -> String {
+    path.file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .replace('.', "_")
+}
+
 fn parse_file(filename: &Path) -> Result<Vec<Statement>, Error> {
     let display_name = || filename.display().to_string();
     let file = File::open(filename).map_err(|e| Error::Io(display_name(), e))?;
@@ -878,6 +894,7 @@ pub struct EnumVariant {
 pub enum TypeDetails {
     TypedefBlock {
         fields: Vec<Field>,
+        comment: Option<String>,
     },
     Typedef {
         r#type: String,
@@ -900,7 +917,7 @@ impl TypeDetails {
     /// Returns optional description of the count
     fn vla(&self, parser: &ApiParser) -> Option<CountDescriptor> {
         let fields = match self {
-            Self::TypedefBlock { fields } => fields,
+            Self::TypedefBlock { fields, .. } => fields,
             Self::Typedef { r#type, size }
                 if matches!(size, Some(FieldSize::Variable(None))) && r#type == "string" =>
             {
@@ -928,15 +945,7 @@ impl TypeEntry {
     }
 
     pub fn import_module(&self) -> Option<String> {
-        Some(
-            self.import_filename
-                .as_ref()?
-                .rsplit('/')
-                .next()?
-                .rsplit('.')
-                .next_back()?
-                .to_string(),
-        )
+        Some(module_name(Path::new(self.import_filename.as_ref()?)))
     }
 }
 
@@ -1093,6 +1102,7 @@ pub struct Type {
     fields: Vec<Field>,
     _options: Vec<OptionStatement>,
     flags: Vec<Flag>,
+    comment: Option<String>,
 }
 
 impl Type {
@@ -1102,6 +1112,10 @@ impl Type {
 
     pub fn fields(&self) -> &[Field] {
         &self.fields
+    }
+
+    pub fn comment(&self) -> Option<&str> {
+        self.comment.as_deref()
     }
 
     #[cfg(test)]
@@ -1180,6 +1194,7 @@ pub struct ApiParser {
     /// Paths for each paths statement
     paths: Vec<Vec<CounterPath>>,
 
+    module: String,
     file_crc: u32,
 }
 
@@ -1189,10 +1204,13 @@ impl ApiParser {
     /// Imports are searched for in each of `include_dirs` in order, with the first match being
     /// used. If `include_dirs` is empty, imports are resolved relative to the current directory.
     pub fn new(filename: &str, include_dirs: &[PathBuf]) -> Result<Self, Error> {
-        let statements = parse_file(Path::new(filename))?;
+        let path = Path::new(filename);
+        let module = module_name(path);
+        let statements = parse_file(path)?;
 
         let mut me = Self {
             include_dirs: include_dirs.to_vec(),
+            module,
             ..Default::default()
         };
 
@@ -1428,6 +1446,7 @@ impl ApiParser {
                     options,
                     mut fields,
                     flags,
+                    comment,
                 } => {
                     self.validate_vla(&name, &fields, false)?;
                     let crc = self.crc_for_fields(&fields, false)?;
@@ -1438,6 +1457,7 @@ impl ApiParser {
                             _options: options,
                             fields: fields.clone(),
                             flags,
+                            comment: comment.clone(),
                         };
                         self.types.push(un);
                     }
@@ -1445,7 +1465,7 @@ impl ApiParser {
                         name,
                         TypeEntry {
                             crc,
-                            details: TypeDetails::TypedefBlock { fields },
+                            details: TypeDetails::TypedefBlock { fields, comment },
                             import_filename: import.map(|m| m.to_string()),
                         },
                     )
@@ -1829,15 +1849,30 @@ impl ApiParser {
     pub fn paths(&self) -> &[Vec<CounterPath>] {
         &self.paths
     }
+
+    /// Module name
+    pub fn module(&self) -> &str {
+        &self.module
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::parser::{
         ApiParser, CounterPath, Error, FieldSize, OptionStatement, Statement, TypeDetails,
-        api_parser,
+        api_parser, module_name,
     };
     use pretty_assertions::assert_eq;
+    use std::path::Path;
+
+    #[test]
+    fn module_names() {
+        assert_eq!(module_name(Path::new("foo.api")), "foo");
+        assert_eq!(module_name(Path::new("vnet/ip/ip_types.api")), "ip_types");
+        assert_eq!(module_name(Path::new("/abs/foo.bar.api")), "foo_bar");
+        assert_eq!(module_name(Path::new("foo")), "foo");
+        assert_eq!(module_name(Path::new(".api")), "_api");
+    }
 
     #[test]
     fn sanity() {
@@ -2103,6 +2138,7 @@ mod tests {
             .find(|un| un.name() == "address")
             .expect("missing address type");
         assert_eq!(t.options(), []);
+        assert_eq!(t.comment(), Some("/* Test address comment 2 */"));
         let expected_fields = [
             (
                 "vl_api_address_family_t",
@@ -2720,7 +2756,7 @@ mod tests {
                 include_dir1.join("nested/include_dir_types2.api"),
             ]
         );
-        let TypeDetails::TypedefBlock { fields } =
+        let TypeDetails::TypedefBlock { fields, .. } =
             &api.lookup_global_type("include_dir_type2").unwrap().details
         else {
             panic!("include_dir_type2 is not a typedef block");
@@ -2748,6 +2784,11 @@ mod tests {
             define separated_flags { u32 a; };
             // adjacent line comment
             define adjacent_line_comment { u32 a; };
+            /* separated typedef */
+
+            typedef separated_typedef { u32 a; };
+            /* adjacent typedef */
+            typedef adjacent_typedef { u32 a; };
             /* separated union */
 
             union separated_union { u32 a; };
@@ -2760,6 +2801,7 @@ mod tests {
             .iter()
             .map(|s| match s {
                 Statement::Define { name, comment, .. }
+                | Statement::TypedefBlock { name, comment, .. }
                 | Statement::Union { name, comment, .. } => (name.as_str(), comment.as_deref()),
                 _ => panic!("unexpected statement {s:?}"),
             })
@@ -2773,6 +2815,8 @@ mod tests {
                 ("adjacent_flags", Some("/* adjacent with flags */")),
                 ("separated_flags", None),
                 ("adjacent_line_comment", Some("/* adjacent line comment */")),
+                ("separated_typedef", None),
+                ("adjacent_typedef", Some("/* adjacent typedef */")),
                 ("separated_union", None),
                 ("adjacent_union", Some("/* last */")),
             ]
