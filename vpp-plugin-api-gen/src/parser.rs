@@ -537,6 +537,15 @@ impl TryFrom<CounterElement> for CheckedCounterElement {
     }
 }
 
+/// Check that the text between a comment and a statement spans at most one newline
+fn at_most_one_newline(s: &str) -> Result<(), &'static str> {
+    if s.matches('\n').count() <= 1 {
+        Ok(())
+    } else {
+        Err("statement adjacent to comment")
+    }
+}
+
 peg::parser! {
     grammar api_parser() for str {
         pub rule statement_list() -> Vec<Statement>
@@ -555,8 +564,8 @@ peg::parser! {
             / counters()
 
         rule define() -> Statement
-            = c:comment() ___ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, vec![], Some(c)) }
-            / c:comment() f:flag_list() _ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, f, Some(c)) }
+            = c:last_comment() comment_gap() "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, vec![], Some(c)) }
+            / c:last_comment() &flags_comment_gap() f:flag_list() _ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, f, Some(c)) }
             / _ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, vec![], None) }
             / f:flag_list() _ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, f, None) }
 
@@ -626,6 +635,21 @@ peg::parser! {
             = ___ c:$(quiet!{"/*"} (!"*/"[_])* "*/") { c.to_string() }
             / ___ quiet!{"//"} c:$([^'\n'])* { format!("/*{} */", c.into_iter().collect::<String>()) }
 
+        // As per vppapigen, when multiple comments precede a statement, only the last
+        // one is associated with it.
+        rule last_comment() -> String
+            = (comment() &comment())* c:comment() { c }
+
+        // As per vppapigen, a comment is only associated with the statement following it if
+        // the statement's keyword starts on the same line that the comment ends on, or the
+        // next line, so there must be at most one newline in between.
+        rule comment_gap()
+            = s:$([' ' | '\t' | '\n' | '\r']*) {? at_most_one_newline(s) }
+
+        // As comment_gap(), but for flags followed by the keyword, without consuming them
+        rule flags_comment_gap()
+            = s:$(flag_list() _) {? at_most_one_newline(s) }
+
         rule typedef() -> Statement
             = f:flag_list() _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, f) }
             / _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, vec![]) }
@@ -659,7 +683,7 @@ peg::parser! {
             = s:$("u8" / "u16" / "u32") { s.to_string() }
 
         rule union() -> Statement
-            = c:comment() ___ "union" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::union(name, b, Some(c)) }
+            = c:last_comment() comment_gap() "union" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::union(name, b, Some(c)) }
             / _ "union" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::union(name, b, None) }
 
         rule service() -> Statement
@@ -2706,6 +2730,53 @@ mod tests {
         // As per vppapigen, counters and paths in imported files are ignored
         assert!(api.counters().is_empty());
         assert_eq!(api.paths(), [] as [Vec<CounterPath>; 0]);
+    }
+
+    #[test]
+    fn comment_association() {
+        let statements = api_parser::statement_list(
+            "/* separated by a blank line */
+
+            define separated { u32 a; };
+            /* adjacent */
+            define adjacent { u32 a; };
+            /* same line */ define same_line { u32 a; };
+            /* adjacent with flags */
+            autoreply define adjacent_flags { u32 a; };
+            /* separated from keyword by flags on own line */
+            autoreply
+            define separated_flags { u32 a; };
+            // adjacent line comment
+            define adjacent_line_comment { u32 a; };
+            /* separated union */
+
+            union separated_union { u32 a; };
+            /* first */
+            /* last */
+            union adjacent_union { u32 a; };",
+        )
+        .expect("failed to parse");
+        let comments: Vec<_> = statements
+            .iter()
+            .map(|s| match s {
+                Statement::Define { name, comment, .. }
+                | Statement::Union { name, comment, .. } => (name.as_str(), comment.as_deref()),
+                _ => panic!("unexpected statement {s:?}"),
+            })
+            .collect();
+        assert_eq!(
+            comments,
+            [
+                ("separated", None),
+                ("adjacent", Some("/* adjacent */")),
+                ("same_line", Some("/* same line */")),
+                ("adjacent_flags", Some("/* adjacent with flags */")),
+                ("separated_flags", None),
+                ("adjacent_line_comment", Some("/* adjacent line comment */")),
+                ("separated_union", None),
+                ("adjacent_union", Some("/* last */")),
+            ]
+        );
     }
 
     #[test]
