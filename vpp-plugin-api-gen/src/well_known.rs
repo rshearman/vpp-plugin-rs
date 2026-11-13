@@ -7,6 +7,9 @@
 //! with `PartialEq` and `Default` which `manual_print` would otherwise suppress, and conversions to
 //! and from the [`std::net`] types.
 //!
+//! Similarly, `mac_address` in VPP's `vnet/ethernet/ethernet_types.api` is marked `manual_print`,
+//! and is given a `Debug` implementation producing the well-known `02:00:5e:00:53:01` format.
+//!
 //! Each type is only treated as well-known if its definition has the expected shape, falling back
 //! to the usual behaviour otherwise.
 
@@ -22,26 +25,40 @@ use crate::{
 /// implementations
 const IP_TYPES_MODULE: &str = "ip_types";
 
-/// Aliases from `ip_types.api` with well-known implementations
+/// Module corresponding to VPP's `vnet/ethernet/ethernet_types.api`, whose types have well-known
+/// implementations
+const ETHERNET_TYPES_MODULE: &str = "ethernet_types";
+
+/// Aliases from `ip_types.api` and `ethernet_types.api` with well-known implementations
 pub(crate) enum WellKnownAlias {
     /// IPv4 or IPv6 address, convertible to and from the named [`std::net`] type
     IpAddress(&'static str),
     /// Alias of a prefix type, formatted the same as it
     Prefix,
+    /// MAC address
+    MacAddress,
 }
 
 impl WellKnownAlias {
     /// Returns the well-known implementation for an alias in the given module, if any
     pub(crate) fn detect(module: &str, alias: &Alias) -> Option<Self> {
-        if module == IP_TYPES_MODULE {
-            well_known_alias(alias)
-        } else {
-            None
+        match module {
+            IP_TYPES_MODULE => well_known_ip_alias(alias),
+            ETHERNET_TYPES_MODULE => well_known_ethernet_alias(alias),
+            _ => None,
         }
     }
 }
 
-fn well_known_alias(alias: &Alias) -> Option<WellKnownAlias> {
+fn well_known_ethernet_alias(alias: &Alias) -> Option<WellKnownAlias> {
+    let field = alias.field();
+    match (field.name.as_str(), field.r#type.as_str(), &field.size) {
+        ("mac_address", "u8", Some(FieldSize::Fixed(6))) => Some(WellKnownAlias::MacAddress),
+        _ => None,
+    }
+}
+
+fn well_known_ip_alias(alias: &Alias) -> Option<WellKnownAlias> {
     let field = alias.field();
     match (field.name.as_str(), field.r#type.as_str(), &field.size) {
         ("ip4_address", "u8", Some(FieldSize::Fixed(4))) => {
@@ -180,6 +197,7 @@ impl ApiGenContext<'_> {
         match well_known {
             WellKnownAlias::IpAddress(std_type) => self.generate_ip_address_impls(name, std_type),
             WellKnownAlias::Prefix => self.generate_forwarding_debug(name),
+            WellKnownAlias::MacAddress => self.generate_mac_address_debug(name),
         }
     }
 
@@ -230,6 +248,26 @@ impl From<::std::net::{std_type}> for {name} {{
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {{
         let inner = self.0;
         ::std::fmt::Debug::fmt(&inner, f)
+    }}
+}}
+"#,
+            name = to_upper_camel_case(name),
+        )?;
+        Ok(())
+    }
+
+    /// Generate Debug for a MAC address, in the form `02:00:5e:00:53:01`
+    fn generate_mac_address_debug(&mut self, name: &str) -> Result<(), Error> {
+        writeln!(
+            self.output_file,
+            r#"impl ::std::fmt::Debug for {name} {{
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {{
+        let octets = self.0;
+        write!(
+            f,
+            "{{:02x}}:{{:02x}}:{{:02x}}:{{:02x}}:{{:02x}}:{{:02x}}",
+            octets[0], octets[1], octets[2], octets[3], octets[4], octets[5]
+        )
     }}
 }}
 "#,
