@@ -123,29 +123,18 @@ fn crc_data_for_fields(fields: &[Field]) -> String {
     format!("[{}]", crc_data_vec.join(", "))
 }
 
-fn crc_data_for_enum_block_statements(block_statements: &[EnumStatement]) -> String {
-    let mut next_value = 0;
+/// CRC data for an enum, given its block statements and the variants resolved from them
+fn crc_data_for_enum(block_statements: &[EnumStatement], variants: &[EnumVariant]) -> String {
     let crc_data_vec: Vec<_> = block_statements
         .iter()
-        .filter_map(|s| {
-            match s {
-                EnumStatement::Variant {
-                    id,
-                    value: explicit_value,
-                    options,
-                } => {
-                    let value = if let Some(value) = explicit_value {
-                        *value
-                    } else {
-                        next_value
-                    };
-                    next_value = value + 1;
-                    // Variants marked as backwards_compatible aren't part of the CRC calculation
-                    if options.iter().any(|o| o.option == "backwards_compatible") {
-                        None
-                    } else {
-                        Some(format!("['{id}', {value}]"))
-                    }
+        .zip(variants)
+        .filter_map(|(s, variant)| match s {
+            EnumStatement::Variant { options, .. } => {
+                // Variants marked as backwards_compatible aren't part of the CRC calculation
+                if options.iter().any(|o| o.option == "backwards_compatible") {
+                    None
+                } else {
+                    Some(format!("['{}', {}]", variant.id, variant.value))
                 }
             }
         })
@@ -198,8 +187,8 @@ fn check_enum_unique_values(name: &str, variants: &[EnumVariant]) -> Result<(), 
 }
 
 impl Statement {
-    fn crc_data(&self) -> Option<String> {
-        match self {
+    fn crc_data(&self) -> Result<Option<String>, Error> {
+        Ok(match self {
             Self::Define { fields, .. } => Some(crc_data_for_fields(fields)),
             Self::Option(option_statement) => Some(option_statement.option.clone()),
             Self::TypedefBlock { fields, .. } => Some(crc_data_for_fields(fields)),
@@ -209,13 +198,20 @@ impl Statement {
             }
             Self::Union { fields, .. } => Some(crc_data_for_fields(fields)),
             Self::Enum {
-                block_statements, ..
-            } => Some(crc_data_for_enum_block_statements(block_statements)),
-            Self::EnumFlag {
-                block_statements, ..
-            } => Some(crc_data_for_enum_block_statements(block_statements)),
+                name,
+                block_statements,
+                ..
+            }
+            | Self::EnumFlag {
+                name,
+                block_statements,
+                ..
+            } => {
+                let variants = enum_variants_from_block_statements(name, block_statements)?;
+                Some(crc_data_for_enum(block_statements, &variants))
+            }
             Self::Import(_) | Self::Service(_) | Self::Counters(_) | Self::Paths(_) => None,
-        }
+        })
     }
 }
 
@@ -379,8 +375,17 @@ pub enum EnumStatement {
     },
 }
 
-fn enum_variants_from_block_statements(block_statements: &[EnumStatement]) -> Vec<EnumVariant> {
-    let mut next_value = 0;
+/// Resolve the values of an enum's variants
+///
+/// As per vppapigen, a variant without an explicit value takes the value of the previous variant
+/// plus one, or zero for the first variant.
+fn enum_variants_from_block_statements(
+    name: &str,
+    block_statements: &[EnumStatement],
+) -> Result<Vec<EnumVariant>, Error> {
+    // None if the previous variant had the maximum value, which is only an error if a variant
+    // without an explicit value follows it
+    let mut next_value = Some(0u32);
     block_statements
         .iter()
         .map(|s| match s {
@@ -389,16 +394,18 @@ fn enum_variants_from_block_statements(block_statements: &[EnumStatement]) -> Ve
                 value: explicit_value,
                 ..
             } => {
-                let value = if let Some(value) = explicit_value {
-                    *value
-                } else {
-                    next_value
+                let value = match explicit_value {
+                    Some(value) => *value,
+                    None => next_value.ok_or_else(|| Error::EnumImplicitValueOverflow {
+                        r#enum: name.to_string(),
+                        variant: id.clone(),
+                    })?,
                 };
-                next_value = value + 1;
-                EnumVariant {
+                next_value = value.checked_add(1);
+                Ok(EnumVariant {
                     id: id.clone(),
                     value,
-                }
+                })
             }
         })
         .collect()
@@ -836,6 +843,10 @@ pub enum Error {
         other_variant: String,
         value: u32,
     },
+    #[error(
+        "Variant \"{variant}\" in enum \"{enum}\" has no explicit value, but the previous variant has the maximum value"
+    )]
+    EnumImplicitValueOverflow { r#enum: String, variant: String },
     #[error("Unable to find import \"{import}\" in include directories {include_dirs:?}")]
     ImportNotFound {
         import: String,
@@ -1448,7 +1459,7 @@ impl ApiParser {
         let mut file_crc = crc32fast::Hasher::new();
 
         for stmt in statements {
-            if let Some(crc_data) = stmt.crc_data() {
+            if let Some(crc_data) = stmt.crc_data()? {
                 file_crc.update(crc_data.as_bytes());
             }
             let (name, t) = match stmt {
@@ -1564,9 +1575,9 @@ impl ApiParser {
                     block_statements,
                 } => {
                     check_enum_backwards_compatible_last(&name, &block_statements)?;
+                    let variants = enum_variants_from_block_statements(&name, &block_statements)?;
                     let mut crc = crc32fast::Hasher::new();
-                    crc.update(crc_data_for_enum_block_statements(&block_statements).as_bytes());
-                    let variants = enum_variants_from_block_statements(&block_statements);
+                    crc.update(crc_data_for_enum(&block_statements, &variants).as_bytes());
                     check_enum_unique_values(&name, &variants)?;
                     if import.is_none() {
                         self.enums.push(Enum {
@@ -1591,9 +1602,9 @@ impl ApiParser {
                     block_statements,
                 } => {
                     check_enum_backwards_compatible_last(&name, &block_statements)?;
+                    let variants = enum_variants_from_block_statements(&name, &block_statements)?;
                     let mut crc = crc32fast::Hasher::new();
-                    crc.update(crc_data_for_enum_block_statements(&block_statements).as_bytes());
-                    let variants = enum_variants_from_block_statements(&block_statements);
+                    crc.update(crc_data_for_enum(&block_statements, &variants).as_bytes());
                     check_enum_unique_values(&name, &variants)?;
                     if import.is_none() {
                         self.enumflags.push(Enum {
@@ -2664,6 +2675,50 @@ mod tests {
         assert_eq!(
             parse_file_expect_error("tests/enum_duplicate_implicit_value.api").to_string(),
             "Variant \"IP_API_PROTO_GGP\" in enum \"ip_proto\" has the same value (2) as variant \"IP_API_PROTO_IGMP\""
+        );
+    }
+
+    #[test]
+    fn enum_max_value() {
+        let api = ApiParser::new(
+            &format!("{}/tests/enum_max_value.api", env!("CARGO_MANIFEST_DIR")),
+            &[],
+        )
+        .expect("failed to parse");
+        let variants: Vec<Vec<_>> = api
+            .enums()
+            .iter()
+            .map(|e| {
+                e.variants
+                    .iter()
+                    .map(|v| (v.id.as_str(), v.value))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            variants,
+            [
+                vec![
+                    ("NAT_API_PROTOCOL_UDP", 6),
+                    ("NAT_API_PROTOCOL_TCP", 0x17),
+                    ("NAT_API_PROTOCOL_ANY", 0xffffffff),
+                ],
+                vec![
+                    ("NAT_API_PROTOCOL_WRAPPED_ANY", 0xffffffff),
+                    ("NAT_API_PROTOCOL_WRAPPED_UDP", 6),
+                    ("NAT_API_PROTOCOL_WRAPPED_TCP", 7),
+                ],
+            ]
+        );
+        // As generated by vppapigen
+        assert_eq!(api.file_crc(), 0xc76924e9);
+    }
+
+    #[test]
+    fn enum_implicit_value_overflow() {
+        assert_eq!(
+            parse_file_expect_error("tests/enum_implicit_value_overflow.api").to_string(),
+            "Variant \"NAT_API_PROTOCOL_OTHER\" in enum \"nat_protocol\" has no explicit value, but the previous variant has the maximum value"
         );
     }
 
