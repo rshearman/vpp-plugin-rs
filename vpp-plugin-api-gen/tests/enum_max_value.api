@@ -1,0 +1,13 @@
+option version = "1.0.0";
+
+enum nat_protocol {
+  NAT_API_PROTOCOL_UDP = 0x06,
+  NAT_API_PROTOCOL_TCP = 0x17,
+  NAT_API_PROTOCOL_ANY = 0xffffffff,
+};
+
+enum nat_protocol_wrapped {
+  NAT_API_PROTOCOL_WRAPPED_ANY = 0xffffffff,
+  NAT_API_PROTOCOL_WRAPPED_UDP = 0x06,
+  NAT_API_PROTOCOL_WRAPPED_TCP,
+};

@@ -1,0 +1,4 @@
+enum nat_protocol {
+  NAT_API_PROTOCOL_ANY = 0xffffffff,
+  NAT_API_PROTOCOL_OTHER,
+};
