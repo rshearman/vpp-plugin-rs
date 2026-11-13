@@ -219,10 +219,29 @@ impl Statement {
     }
 }
 
+/// The value of an option, typed as per vppapigen
+#[derive(Debug, Clone, PartialEq)]
+pub enum OptionValue {
+    Bool(bool),
+    Integer(i128),
+    Float(f64),
+    /// A string literal (without the quotes) or an identifier
+    String(String),
+}
+
+impl OptionValue {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => Some(s),
+            Self::Bool(_) | Self::Integer(_) | Self::Float(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptionStatement {
     option: String,
-    value: Option<String>,
+    value: Option<OptionValue>,
 }
 
 impl OptionStatement {
@@ -230,8 +249,8 @@ impl OptionStatement {
         &self.option
     }
 
-    pub fn value(&self) -> Option<&str> {
-        self.value.as_deref()
+    pub fn value(&self) -> Option<&OptionValue> {
+        self.value.as_ref()
     }
 }
 
@@ -336,12 +355,12 @@ impl Field {
         None
     }
 
-    /// Returns the value of the first option with the given name that has a value
+    /// Returns the value of the first option with the given name that has a string value
     fn option_value(&self, option: &str) -> Option<&str> {
         self.options
             .iter()
             .filter(|o| o.option() == option)
-            .find_map(OptionStatement::value)
+            .find_map(|o| o.value().and_then(OptionValue::as_str))
     }
 }
 
@@ -613,13 +632,26 @@ peg::parser! {
             = _ "option" __ o:identifier() _ ";" { OptionStatement { option: o, value: None } }
             / _ "option" __ o:identifier() _ "=" _ v:option_value() _ ";" { OptionStatement { option: o, value: Some(v) } }
 
-        // Keywords must not be followed by an identifier character, otherwise "x=true_value"
-        // in a field option list would be parsed as the options "x=true" and "_value".
-        rule option_value() -> String
-            = "true" !identifier_char() { "true".to_string() }
-            / "false" !identifier_char() { "false".to_string() }
-            / string_literal()
-            / identifier()
+        // Keywords and numbers must not be followed by an identifier character, otherwise
+        // "x=true_value" in a field option list would be parsed as the options "x=true" and
+        // "_value".
+        rule option_value() -> OptionValue
+            = "true" !identifier_char() { OptionValue::Bool(true) }
+            / "false" !identifier_char() { OptionValue::Bool(false) }
+            / n:option_number() !identifier_char() { n }
+            / s:string_literal() { OptionValue::String(s) }
+            / i:identifier() { OptionValue::String(i) }
+
+        // As per vppapigen, a hexadecimal integer, or a possibly negative decimal integer or
+        // float, e.g. "0xffffffff", "-1", "1.0" or "1."
+        rule option_number() -> OptionValue
+            = ("0x" / "0X") n:$(['0'..='9' | 'a'..='f' | 'A'..='F']+) {?
+                i128::from_str_radix(n, 16).map(OptionValue::Integer).or(Err("integer"))
+            }
+            / n:$("-"? ['0'..='9']+ "." ['0'..='9']*) {?
+                n.parse().map(OptionValue::Float).or(Err("float"))
+            }
+            / n:$("-"? ['0'..='9']+) {? n.parse().map(OptionValue::Integer).or(Err("integer")) }
 
         rule string_literal() -> String
             = "\"" s:$("\\\"" / [^'"'])* "\"" { s.into_iter().collect() }
@@ -1859,8 +1891,8 @@ impl ApiParser {
 #[cfg(test)]
 mod tests {
     use crate::parser::{
-        ApiParser, CounterPath, Error, FieldSize, OptionStatement, Statement, TypeDetails,
-        api_parser, module_name,
+        ApiParser, CounterPath, Error, FieldSize, OptionStatement, OptionValue, Statement,
+        TypeDetails, api_parser, module_name,
     };
     use pretty_assertions::assert_eq;
     use std::path::Path;
@@ -1890,7 +1922,10 @@ mod tests {
             .collect();
         assert_eq!(
             options,
-            [("version".to_string(), Some("1.0.0".to_string()))]
+            [(
+                "version".to_string(),
+                Some(OptionValue::String("1.0.0".to_string()))
+            )]
         );
         let expected_imports: &[String] = &[];
         assert_eq!(api.imports(), expected_imports);
@@ -2102,7 +2137,7 @@ mod tests {
                 "ip4",
                 &[OptionStatement {
                     option: "case".to_string(),
-                    value: Some("ADDRESS_IP4".to_string()),
+                    value: Some(OptionValue::String("ADDRESS_IP4".to_string())),
                 }] as &[OptionStatement],
                 &None,
             ),
@@ -2111,7 +2146,7 @@ mod tests {
                 "ip6",
                 &[OptionStatement {
                     option: "case".to_string(),
-                    value: Some("ADDRESS_IP6".to_string()),
+                    value: Some(OptionValue::String("ADDRESS_IP6".to_string())),
                 }],
                 &None,
             ),
@@ -2151,7 +2186,7 @@ mod tests {
                 "un",
                 &[OptionStatement {
                     option: "discriminator".to_string(),
-                    value: Some("af".to_string()),
+                    value: Some(OptionValue::String("af".to_string())),
                 }],
                 &None,
             ),
@@ -2242,7 +2277,7 @@ mod tests {
                 "keepalive",
                 &[OptionStatement {
                     option: "default".to_string(),
-                    value: Some("true".to_string()),
+                    value: Some(OptionValue::Bool(true)),
                 }],
                 &None,
             ),
@@ -2666,10 +2701,11 @@ mod tests {
 
     #[test]
     fn field_options_syntax() {
-        let option = |option: &str, value: Option<&str>| OptionStatement {
+        let option = |option: &str, value: Option<OptionValue>| OptionStatement {
             option: option.to_string(),
-            value: value.map(|v| v.to_string()),
+            value,
         };
+        let string = |s: &str| OptionValue::String(s.to_string());
 
         let fields = parse_typedef_fields(
             "typedef t {
@@ -2693,12 +2729,18 @@ mod tests {
                 ),
                 (
                     "b".to_string(),
-                    vec![option("default", Some("true")), option("bar", None)],
+                    vec![
+                        option("default", Some(OptionValue::Bool(true))),
+                        option("bar", None)
+                    ],
                     None
                 ),
                 (
                     "c".to_string(),
-                    vec![option("x", Some("false")), option("y", None)],
+                    vec![
+                        option("x", Some(OptionValue::Bool(false))),
+                        option("y", None)
+                    ],
                     None
                 ),
                 (
@@ -2724,12 +2766,123 @@ mod tests {
         assert_eq!(
             fields,
             [
-                ("a".to_string(), vec![option("x", Some("true_value"))], None),
                 (
-                    "b".to_string(),
-                    vec![option("x", Some("falsey")), option("y", None)],
+                    "a".to_string(),
+                    vec![option("x", Some(string("true_value")))],
                     None
                 ),
+                (
+                    "b".to_string(),
+                    vec![option("x", Some(string("falsey"))), option("y", None)],
+                    None
+                ),
+            ]
+        );
+
+        // As per vppapigen, numeric values may be hexadecimal, or decimal integers or floats
+        let fields = parse_typedef_fields(
+            "typedef t {
+                u32 a[default=0xffffffff];
+                u32 b[default=0X1F];
+                i32 c[default=-1500, x];
+                f64 d[default=1.0 y];
+                f64 e[default=-2.];
+                string f[default=\"text\"];
+            };",
+        )
+        .expect("failed to parse");
+        assert_eq!(
+            fields,
+            [
+                (
+                    "a".to_string(),
+                    vec![option("default", Some(OptionValue::Integer(0xffffffff)))],
+                    None
+                ),
+                (
+                    "b".to_string(),
+                    vec![option("default", Some(OptionValue::Integer(0x1f)))],
+                    None
+                ),
+                (
+                    "c".to_string(),
+                    vec![
+                        option("default", Some(OptionValue::Integer(-1500))),
+                        option("x", None)
+                    ],
+                    None
+                ),
+                (
+                    "d".to_string(),
+                    vec![
+                        option("default", Some(OptionValue::Float(1.0))),
+                        option("y", None)
+                    ],
+                    None
+                ),
+                (
+                    "e".to_string(),
+                    vec![option("default", Some(OptionValue::Float(-2.0)))],
+                    None
+                ),
+                (
+                    "f".to_string(),
+                    vec![option("default", Some(string("text")))],
+                    None
+                ),
+            ]
+        );
+
+        // A number value must not be split from following identifier characters
+        for input in [
+            "typedef t { u8 a[x=1abc]; };",
+            "typedef t { u8 a[x=0x]; };",
+            "typedef t { u8 a[x=0xfg]; };",
+            "typedef t { u8 a[x=1.5e3]; };",
+        ] {
+            parse_typedef_fields(input).expect_err(input);
+        }
+    }
+
+    #[test]
+    fn option_values_json() {
+        let statements = api_parser::statement_list(
+            "option version = \"1.2.3\";
+            typedef t {
+                u32 a[default=0xffffffff];
+                f64 b[default=1.0];
+                i32 c[default=-1];
+                bool d[default=true];
+                bool e[default=false];
+                u32 f[x=identifier];
+            };",
+        )
+        .expect("failed to parse");
+        let [
+            Statement::Option(version),
+            Statement::TypedefBlock { fields, .. },
+        ] = statements.as_slice()
+        else {
+            panic!("unexpected statements: {statements:?}");
+        };
+        assert_eq!(
+            serde_json::to_string(&version.value()).unwrap(),
+            r#""1.2.3""#
+        );
+        // As per vppapigen, true is output as a string, but false as a boolean
+        let values: Vec<_> = fields
+            .iter()
+            .map(|f| serde_json::to_string(&f.options[0].value()).unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            [
+                "4294967295",
+                "1.0",
+                "-1",
+                r#""true""#,
+                "false",
+                r#""identifier""#
             ]
         );
     }
