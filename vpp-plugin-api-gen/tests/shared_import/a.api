@@ -1,0 +1,7 @@
+option version = "1.0.0";
+
+import "shared_import/types.api";
+
+typedef shared_import_a {
+    vl_api_shared_import_type_t t;
+};
