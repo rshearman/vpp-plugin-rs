@@ -1,0 +1,8 @@
+option version = "2.0.0";
+
+import "shared_import/types.api";
+
+union shared_import_b {
+    vl_api_shared_import_type_t t;
+    vl_api_shared_import_alias_t alias;
+};
