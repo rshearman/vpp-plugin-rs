@@ -8,7 +8,7 @@ use serde::{
 
 use crate::parser::{
     ApiParser, CheckedCounterElement, CheckedCounters, CounterPath, EnumVariant, Field, FieldSize,
-    Message, OptionStatement, Service, TypeDetails, TypeEntry,
+    Message, OptionStatement, OptionValue, Service, TypeDetails, TypeEntry,
 };
 
 #[derive(Debug, Serialize)]
@@ -20,7 +20,7 @@ struct ApiFile<'a> {
     enums: Vec<JsonTypeEntry>,
     enumflags: Vec<JsonTypeEntry>,
     services: IndexMap<String, Service>,
-    options: IndexMap<String, Option<String>>,
+    options: IndexMap<&'a str, Option<&'a OptionValue>>,
     aliases: IndexMap<String, JsonAlias>,
     vl_api_version: String,
     imports: &'a [String],
@@ -31,21 +31,35 @@ struct ApiFile<'a> {
 #[derive(Debug, Serialize)]
 struct ApiMessageInfo<'a> {
     crc: String,
-    options: IndexMap<String, Option<String>>,
+    options: IndexMap<&'a str, Option<&'a OptionValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     comment: Option<&'a str>,
 }
 
-fn option_statements_to_json_map(options: &[OptionStatement]) -> IndexMap<String, Option<String>> {
+fn option_statements_to_json_map(
+    options: &[OptionStatement],
+) -> IndexMap<&str, Option<&OptionValue>> {
     options
         .iter()
-        .map(|opt| {
-            (
-                opt.option().to_string(),
-                opt.value().map(|s| String::from(s).replace("\"", "")),
-            )
-        })
+        .map(|opt| (opt.option(), opt.value()))
         .collect()
+}
+
+impl Serialize for OptionValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            // vppapigen's lexer rule for true actually matches "false", so "true" is lexed as an
+            // identifier and output as a string, whereas false is output as a boolean
+            OptionValue::Bool(true) => serializer.serialize_str("true"),
+            OptionValue::Bool(false) => serializer.serialize_bool(false),
+            OptionValue::Integer(n) => serializer.serialize_i128(*n),
+            OptionValue::Float(f) => serializer.serialize_f64(*f),
+            OptionValue::String(s) => serializer.serialize_str(&s.replace('"', "")),
+        }
+    }
 }
 
 impl Serialize for Message {
