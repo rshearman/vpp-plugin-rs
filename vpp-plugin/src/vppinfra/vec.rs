@@ -930,10 +930,25 @@ impl<T> IntoIterator for Vec<T> {
     }
 }
 
-/// An iterator that moves out of a vector.
+/// An iterator that moves out of a VPP vector
 ///
-/// This `struct` is created by the `into_iter` method on [`Vec`](struct.Vec.html)
+/// This `struct` is created by the [`into_iter`](IntoIterator::into_iter) method on [`Vec<T>`]
 /// (provided by the [`IntoIterator`] trait).
+///
+/// Any elements not yielded by the iterator are dropped, and the vector's memory is freed back
+/// to VPP's allocator, when the iterator is dropped.
+///
+/// # Examples
+///
+/// ```
+/// # use vpp_plugin::vec;
+/// # vpp_plugin::vppinfra::clib_mem_init();
+/// let v = vec![1, 2, 3];
+/// let mut iter = v.into_iter();
+/// assert_eq!(iter.next(), Some(1));
+/// assert_eq!(iter.next_back(), Some(3));
+/// assert_eq!(iter.len(), 1);
+/// ```
 pub struct IntoIter<T> {
     start_ptr: *mut T,
     ptr: *mut T,
