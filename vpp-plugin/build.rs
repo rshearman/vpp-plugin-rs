@@ -1,8 +1,26 @@
 use std::env;
 use std::path::PathBuf;
 
-fn headers_available() -> bool {
+/// Whether the crate is being built with AddressSanitizer (`-Zsanitizer=address`)
+///
+/// VPP's headers decide whether to use ASAN-specific behaviour, such as notifying ASAN of stack
+/// switches for process nodes and adding fields to structures, based on whether the C compiler
+/// has ASAN enabled. Therefore, C code and bindings must be built with ASAN enabled to match an
+/// ASAN-enabled VPP.
+fn asan_enabled() -> bool {
+    env::var("CARGO_CFG_SANITIZE").is_ok_and(|s| s.split(',').any(|s| s == "address"))
+}
+
+fn new_cc_build() -> cc::Build {
     let mut cc = cc::Build::new();
+    if asan_enabled() {
+        cc.flag("-fsanitize=address");
+    }
+    cc
+}
+
+fn headers_available() -> bool {
+    let mut cc = new_cc_build();
     cc.file("vlib_wrapper.h");
     cc.warnings_into_errors(true);
     if let Err(e) = cc.try_compile("libvlib_wrapper.a") {
@@ -18,10 +36,14 @@ fn headers_available() -> bool {
 
 fn build_wrapper() {
     println!("cargo:rerun-if-changed=vlib_wrapper.c");
+    println!("cargo:rerun-if-env-changed=CLIB_DEBUG");
 
-    let mut cc = cc::Build::new();
+    let mut cc = new_cc_build();
     cc.file("vlib_wrapper.c");
     cc.warnings_into_errors(true);
+    if env::var("CLIB_DEBUG").is_ok() {
+        cc.define("CLIB_DEBUG", None);
+    }
     cc.compile("libvlib_wrapper.a");
 }
 
@@ -71,6 +93,11 @@ fn build_ver_from_expansion(expanded: &str) -> Option<String> {
 fn main() {
     println!("cargo:rerun-if-changed=vlib_wrapper.h");
     println!("cargo:rustc-check-cfg=cfg(pregenerated_bindings)");
+    println!("cargo:rustc-check-cfg=cfg(vpp_asan)");
+
+    if asan_enabled() {
+        println!("cargo:rustc-cfg=vpp_asan");
+    }
 
     if !headers_available() {
         println!("cargo:rustc-cfg=pregenerated_bindings");
@@ -86,7 +113,11 @@ fn main() {
 
     build_wrapper();
 
-    let bindings = bindgen::Builder::default()
+    let mut builder = bindgen::Builder::default();
+    if asan_enabled() {
+        builder = builder.clang_arg("-fsanitize=address");
+    }
+    let bindings = builder
         .header("vlib_wrapper.h")
         .allowlist_file("vlib_wrapper\\.h")
         .allowlist_file(".*/vlib/buffer\\.h")

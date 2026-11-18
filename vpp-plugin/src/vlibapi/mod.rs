@@ -398,13 +398,17 @@ impl<'scope, T: EndianSwap> Stream<'scope, T> {
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Default)]
+#[derive(Default)]
+#[allow(missing_copy_implementations)] // see below
 /// A string type used in VPP API messages.
 ///
 /// This represents a variable-length string with a length prefix,
 /// commonly used in VPP API message structures.
 ///
-/// Note that copying/cloning `ApiString` objects will not copy/clone the contents of the string.
+/// The contents of the string are stored immediately after the length, in the memory of the
+/// containing message, so an `ApiString` is only meaningful in place in that memory. For this
+/// reason it is neither `Copy` nor `Clone`, and neither are types that contain it, since a copy
+/// would contain the length but not the contents.
 pub struct ApiString {
     length: u32,
     buf: [u8; 0],
@@ -659,6 +663,22 @@ mod tests {
         let mut s: ApiFixedString<10> = Default::default();
         s.copy_from_str("test");
         assert_eq!(format!("{:?}", s), "\"test\"");
+    }
+
+    #[test]
+    fn test_string_in_place() {
+        // Length prefix in host order followed by the contents, as in a message buffer
+        let mut buf = [0u8; 4 + 5];
+        buf[..4].copy_from_slice(&5u32.to_ne_bytes());
+        buf[4..].copy_from_slice(b"hello");
+        // SAFETY: ApiString has an alignment of 1 and buf contains the length followed by that
+        // many bytes of contents
+        let s = unsafe { &*(buf.as_ptr() as *const ApiString) };
+        assert_eq!(s.len(), 5);
+        assert!(!s.is_empty());
+        assert_eq!(s.as_bytes(), b"hello");
+        assert_eq!(s.to_str().unwrap(), "hello");
+        assert_eq!(format!("{:?}", s), "\"hello\"");
     }
 
     #[test]

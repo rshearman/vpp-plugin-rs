@@ -155,6 +155,12 @@ autoendian define test_string_reply {
     string variable[];
 };
 
+autoendian autoreply define test_string_in_type {
+    u32 client_index;
+    u32 context;
+    vl_api_test_string_typedef_t field;
+};
+
 autoendian autoreply define test_enumflag {
     u32 client_index;
     u32 context;

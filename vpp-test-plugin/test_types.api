@@ -38,6 +38,11 @@ typedef test_variable_array_typedef {
     u16 values[nitems];
 };
 
+typedef test_string_typedef {
+    u32 id;
+    string name[];
+};
+
 enumflag test_dir : u8 {
     TEST_DIR_NONE = 0x0,
     TEST_DIR_RX = 0x1,

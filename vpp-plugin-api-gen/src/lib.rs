@@ -291,8 +291,23 @@ impl ApiGenContext<'_> {
         Ok(())
     }
 
-    fn generate_debug_trait(&mut self, name: &str, fields: &[Field]) -> Result<(), Error> {
+    /// Generate an implementation of `fmt::Debug`
+    ///
+    /// Variable-length arrays are omitted, other than strings. Since the types are packed, fields
+    /// are copied out to temporaries, except for a last field containing a string, which can't
+    /// be copied and so is referenced in place (which is sound since generated types and
+    /// `ApiString` have an alignment of 1).
+    fn generate_debug_trait(
+        &mut self,
+        name: &str,
+        fields: &[Field],
+        last_field_contains_string: bool,
+    ) -> Result<(), Error> {
         let upper_camel_name = to_upper_camel_case(name);
+        let by_ref = |i: usize| last_field_contains_string && i == fields.len() - 1;
+        let printed = |i: usize, field: &Field| {
+            by_ref(i) || !matches!(field.size, Some(FieldSize::Variable(_)))
+        };
 
         writeln!(
             self.output_file,
@@ -305,12 +320,14 @@ impl ApiGenContext<'_> {
             self.output_file,
             "    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {{"
         )?;
-        for field in fields {
-            if !matches!(field.size, Some(FieldSize::Variable(_))) {
+        for (i, field) in fields.iter().enumerate() {
+            if printed(i, field) {
                 writeln!(
                     self.output_file,
-                    "        let tmp_{} = self.{};",
-                    field.name, field.name
+                    "        let tmp_{} = {}self.{};",
+                    field.name,
+                    if by_ref(i) { "&" } else { "" },
+                    field.name
                 )?;
             }
         }
@@ -319,8 +336,8 @@ impl ApiGenContext<'_> {
             "        f.debug_struct(\"{}\")",
             upper_camel_name
         )?;
-        for field in fields {
-            if !matches!(field.size, Some(FieldSize::Variable(_))) {
+        for (i, field) in fields.iter().enumerate() {
+            if printed(i, field) {
                 writeln!(
                     self.output_file,
                     "            .field(\"{}\", &tmp_{})",
@@ -328,11 +345,35 @@ impl ApiGenContext<'_> {
                 )?;
             }
         }
-        writeln!(self.output_file, "            .finish_non_exhaustive()")?;
+        if fields
+            .iter()
+            .enumerate()
+            .all(|(i, field)| printed(i, field))
+        {
+            writeln!(self.output_file, "            .finish()")?;
+        } else {
+            writeln!(self.output_file, "            .finish_non_exhaustive()")?;
+        }
         writeln!(self.output_file, "    }}")?;
         writeln!(self.output_file, "}}")?;
         writeln!(self.output_file)?;
 
+        Ok(())
+    }
+
+    /// Generate the derives for a message or type
+    ///
+    /// Types containing a string can't be `Copy` or `Clone`, since `ApiString` isn't, because a
+    /// copy would only contain the length of the string, not its contents.
+    fn generate_derives(&mut self, opt_derives: &str, contains_string: bool) -> Result<(), Error> {
+        let derives = if contains_string {
+            opt_derives.trim_end_matches(", ").to_string()
+        } else {
+            format!("{}Copy, Clone", opt_derives)
+        };
+        if !derives.is_empty() {
+            writeln!(self.output_file, "#[derive({})]", derives)?;
+        }
         Ok(())
     }
 
@@ -381,14 +422,19 @@ impl ApiGenContext<'_> {
                 comment.replace("\"", "\\\"")
             )?;
         }
-        let opt_derives = if message.manual_print() || message.vla_non_recursive().is_some() {
-            ""
-        } else if message.vla(self.parser).is_some() {
-            "Debug, "
-        } else {
-            "Debug, PartialEq, "
-        };
-        writeln!(self.output_file, "#[derive({}Copy, Clone)]", opt_derives)?;
+        let contains_string = matches!(
+            message.vla(self.parser),
+            Some((_, CountDescriptor::String(_)))
+        );
+        let opt_derives =
+            if message.manual_print() || message.vla_non_recursive().is_some() || contains_string {
+                ""
+            } else if message.vla(self.parser).is_some() {
+                "Debug, "
+            } else {
+                "Debug, PartialEq, "
+            };
+        self.generate_derives(opt_derives, contains_string)?;
         writeln!(self.output_file, "#[repr(C, packed)]")?;
         writeln!(self.output_file, "pub struct {} {{", upper_camel_name)?;
         for field in message.fields() {
@@ -498,9 +544,11 @@ impl ApiGenContext<'_> {
         self.generate_endian_swap(message.name(), EndianSwapInput::Fields(message.fields()))?;
 
         // Manually implement fmt::Debug so that the zero-length (but actually variable-length)
-        // field isn't printed to avoid misleading anyone looking at the output
-        if message.vla_non_recursive().is_some() {
-            self.generate_debug_trait(message.name(), message.fields())?;
+        // field isn't printed to avoid misleading anyone looking at the output, or because the
+        // message contains a string and so can't be copied, which the derived implementation
+        // requires for packed types
+        if message.vla_non_recursive().is_some() || (contains_string && !message.manual_print()) {
+            self.generate_debug_trait(message.name(), message.fields(), contains_string)?;
         }
 
         writeln!(
@@ -1050,14 +1098,15 @@ impl ApiGenContext<'_> {
     fn generate_type(&mut self, t: &Type) -> Result<(), Error> {
         let upper_camel_name = to_upper_camel_case(t.name());
 
+        let contains_string = matches!(t.vla(self.parser), Some((_, CountDescriptor::String(_))));
         let opt_derives = if t.manual_print() {
             ""
-        } else if t.vla_non_recursive().is_some() {
+        } else if t.vla_non_recursive().is_some() || contains_string {
             "Default, "
         } else {
             "Debug, PartialEq, Default, "
         };
-        writeln!(self.output_file, "#[derive({}Copy, Clone)]", opt_derives)?;
+        self.generate_derives(opt_derives, contains_string)?;
         writeln!(self.output_file, "#[repr(C, packed)]")?;
         writeln!(self.output_file, "pub struct {} {{", upper_camel_name)?;
         for field in t.fields() {
@@ -1076,9 +1125,11 @@ impl ApiGenContext<'_> {
         }
 
         // Manually implement fmt::Debug so that the zero-length (but actually variable-length)
-        // field isn't printed to avoid misleading anyone looking at the output
-        if t.vla_non_recursive().is_some() {
-            self.generate_debug_trait(t.name(), t.fields())?;
+        // field isn't printed to avoid misleading anyone looking at the output, or because the
+        // type contains a string and so can't be copied, which the derived implementation
+        // requires for packed types
+        if t.vla_non_recursive().is_some() || (contains_string && !t.manual_print()) {
+            self.generate_debug_trait(t.name(), t.fields(), contains_string)?;
         }
 
         if !t.manual_endian() {
