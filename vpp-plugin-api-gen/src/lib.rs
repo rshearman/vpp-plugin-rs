@@ -740,7 +740,13 @@ impl ApiGenContext<'_> {
         writeln!(self.output_file, "    }}")?;
         if let Some((field, count_descr)) = message.vla(self.parser) {
             writeln!(self.output_file)?;
-            if let Some(FieldSize::Variable(Some(count_field))) = &field.size {
+            // Accessors are only generated for VLAs that are direct members of the message
+            if let Some(FieldSize::Variable(Some(count_field))) = &field.size
+                && message
+                    .fields()
+                    .last()
+                    .is_some_and(|last| std::ptr::eq(last, field))
+            {
                 self.generate_vla_accessors(count_field, field)?;
                 writeln!(self.output_file)?;
             }
@@ -1463,8 +1469,12 @@ impl ApiGenContext<'_> {
         writeln!(self.output_file, "}}")?;
         writeln!(self.output_file)?;
 
+        // Accessors are only generated for VLAs that are direct members of the type
         if let Some((field, _)) = t.vla(self.parser)
             && let Some(FieldSize::Variable(Some(count_field))) = &field.size
+            && t.fields()
+                .last()
+                .is_some_and(|last| std::ptr::eq(last, field))
         {
             writeln!(self.output_file, "impl {} {{", upper_camel_name)?;
             self.generate_vla_accessors(count_field, field)?;
