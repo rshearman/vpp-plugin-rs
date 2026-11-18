@@ -730,6 +730,7 @@ class IntegrationTestCase(IntegrationTestBase):
             {
                 'field': {
                     'nitems': 4,
+                    'unused': [0, 0, 0, 0],
                     'values': [42, 0xdead, 0, 0xffff],
                 }
             },

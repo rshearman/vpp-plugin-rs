@@ -27,6 +27,8 @@ typedef test_address {
 
 typedef test_variable_array_typedef {
     i16 nitems;
+    // Some unused values to ensure calc_size is generated correctly
+    u32 unused[4];
     u16 values[nitems];
 };
 
