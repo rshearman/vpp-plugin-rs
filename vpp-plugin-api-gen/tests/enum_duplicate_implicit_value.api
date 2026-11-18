@@ -1,0 +1,6 @@
+enum ip_proto : u8 {
+  IP_API_PROTO_HOPOPT,
+  IP_API_PROTO_IGMP = 2,
+  IP_API_PROTO_ICMP = 1,
+  IP_API_PROTO_GGP,
+};

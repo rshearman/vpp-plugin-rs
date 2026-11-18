@@ -1,0 +1,5 @@
+enum tunnel_encap_decap_flags : u8 {
+    TUNNEL_API_ENCAP_DECAP_FLAG_NONE = 0,
+    TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_INNER_HASH = 0x20 [backwards_compatible],
+    TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_COPY_DF = 0x1,
+};

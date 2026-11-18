@@ -1,0 +1,17 @@
+option version = "1.0.0";
+
+/* Both of these import shared_import/types.api */
+import "shared_import/a.api";
+import "shared_import/b.api";
+/* As does this file, twice */
+import "shared_import/types.api";
+import "shared_import/types.api";
+
+autoreply autoendian define shared_import_message {
+    u32 client_index;
+    u32 context;
+
+    vl_api_shared_import_a_t a;
+    vl_api_shared_import_b_t b;
+    vl_api_shared_import_enum_t e;
+};

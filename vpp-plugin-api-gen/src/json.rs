@@ -7,44 +7,59 @@ use serde::{
 };
 
 use crate::parser::{
-    ApiParser, EnumVariant, Field, FieldSize, Message, OptionStatement, Service, TypeDetails,
-    TypeEntry,
+    ApiParser, CheckedCounterElement, CheckedCounters, CounterPath, EnumVariant, Field, FieldSize,
+    Message, OptionStatement, OptionValue, Service, TypeDetails, TypeEntry,
 };
 
 #[derive(Debug, Serialize)]
 struct ApiFile<'a> {
+    module: String,
     types: Vec<JsonTypeEntry>,
     messages: &'a [Message],
     unions: Vec<JsonTypeEntry>,
     enums: Vec<JsonTypeEntry>,
     enumflags: Vec<JsonTypeEntry>,
     services: IndexMap<String, Service>,
-    options: IndexMap<String, Option<String>>,
+    options: IndexMap<&'a str, Option<&'a OptionValue>>,
     aliases: IndexMap<String, JsonAlias>,
     vl_api_version: String,
     imports: &'a [String],
-    counters: &'a [()],
-    paths: &'a [()],
+    counters: &'a [CheckedCounters],
+    paths: &'a [Vec<CounterPath>],
 }
 
 #[derive(Debug, Serialize)]
 struct ApiMessageInfo<'a> {
     crc: String,
-    options: IndexMap<String, Option<String>>,
+    options: IndexMap<&'a str, Option<&'a OptionValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     comment: Option<&'a str>,
 }
 
-fn option_statements_to_json_map(options: &[OptionStatement]) -> IndexMap<String, Option<String>> {
+fn option_statements_to_json_map(
+    options: &[OptionStatement],
+) -> IndexMap<&str, Option<&OptionValue>> {
     options
         .iter()
-        .map(|opt| {
-            (
-                opt.option().to_string(),
-                opt.value().map(|s| String::from(s).replace("\"", "")),
-            )
-        })
+        .map(|opt| (opt.option(), opt.value()))
         .collect()
+}
+
+impl Serialize for OptionValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            // vppapigen's lexer rule for true actually matches "false", so "true" is lexed as an
+            // identifier and output as a string, whereas false is output as a boolean
+            OptionValue::Bool(true) => serializer.serialize_str("true"),
+            OptionValue::Bool(false) => serializer.serialize_bool(false),
+            OptionValue::Integer(n) => serializer.serialize_i128(*n),
+            OptionValue::Float(f) => serializer.serialize_f64(*f),
+            OptionValue::String(s) => serializer.serialize_str(&s.replace('"', "")),
+        }
+    }
 }
 
 impl Serialize for Message {
@@ -169,6 +184,11 @@ impl Serialize for JsonAlias {
 struct JsonTypeEntry(String, Arc<TypeEntry>);
 
 #[derive(Debug, Serialize)]
+struct JsonTypeInfo<'a> {
+    comment: &'a str,
+}
+
+#[derive(Debug, Serialize)]
 struct JsonEnumInfo<'a> {
     enumtype: &'a str,
 }
@@ -179,11 +199,17 @@ impl Serialize for JsonTypeEntry {
         S: serde::Serializer,
     {
         match &self.1.details {
-            TypeDetails::TypedefBlock { fields, .. } => {
-                let mut seq = serializer.serialize_seq(Some(1 + fields.len()))?;
+            TypeDetails::TypedefBlock {
+                fields, comment, ..
+            } => {
+                let len = 1 + fields.len() + usize::from(comment.is_some());
+                let mut seq = serializer.serialize_seq(Some(len))?;
                 seq.serialize_element(&self.0)?;
                 for field in fields {
                     seq.serialize_element(field)?;
+                }
+                if let Some(comment) = comment {
+                    seq.serialize_element(&JsonTypeInfo { comment })?;
                 }
                 seq.end()
             }
@@ -231,6 +257,45 @@ impl Serialize for EnumVariant {
         seq.serialize_element(&self.id)?;
         seq.serialize_element(&self.value)?;
         seq.end()
+    }
+}
+
+impl Serialize for CheckedCounters {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("name", self.name())?;
+        map.serialize_entry("elements", self.elements())?;
+        map.end()
+    }
+}
+
+impl Serialize for CheckedCounterElement {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(5))?;
+        map.serialize_entry("name", self.name())?;
+        map.serialize_entry("severity", self.severity())?;
+        map.serialize_entry("type", self.r#type())?;
+        map.serialize_entry("units", self.units())?;
+        map.serialize_entry("description", self.description())?;
+        map.end()
+    }
+}
+
+impl Serialize for CounterPath {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("path", self.path())?;
+        map.serialize_entry("counter", self.counter())?;
+        map.end()
     }
 }
 
@@ -291,6 +356,7 @@ pub(crate) fn generate_json(parser: &ApiParser) -> Result<String, serde_json::Er
         })
         .collect();
     let api_file = ApiFile {
+        module: parser.module().to_string(),
         types,
         messages: parser.messages(),
         unions,
@@ -301,8 +367,8 @@ pub(crate) fn generate_json(parser: &ApiParser) -> Result<String, serde_json::Er
         aliases,
         vl_api_version: format!("0x{:08x}", parser.file_crc()),
         imports: parser.imports(),
-        counters: &[],
-        paths: &[],
+        counters: parser.counters(),
+        paths: parser.paths(),
     };
     serde_json::to_string_pretty(&api_file)
 }
@@ -316,8 +382,11 @@ mod tests {
 
     #[test]
     fn sanity() {
-        let api = ApiParser::new(&format!("{}/tests/sanity.api", env!("CARGO_MANIFEST_DIR")))
-            .expect("failed");
+        let api = ApiParser::new(
+            &format!("{}/tests/sanity.api", env!("CARGO_MANIFEST_DIR")),
+            &[],
+        )
+        .expect("failed");
         let json = generate_json(&api).expect("generating JSON failed");
 
         let expected_json: serde_json::Value = serde_json::from_reader(

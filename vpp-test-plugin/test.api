@@ -2,6 +2,18 @@ option version = "1.0.0";
 
 import "test_types.api";
 
+// Union referencing indirectly imported case
+union test_address_union2 {
+  vl_api_test_ip4_address_t ip4 [case=ADDRESS_IP4];
+  vl_api_test_ip6_address_t ip6 [case=ADDRESS_IP6];
+};
+
+// Referencing union with indirectly imported discriminator
+typedef test_address2 {
+  vl_api_address_family_t af;
+  vl_api_test_address_union2_t un [discriminator=af];
+};
+
 /**
  * @brief Enable/disable test node on a given interface
  * @param enable - Zero to disable, non-zero to enable
@@ -98,6 +110,34 @@ autoreply autoendian define test_union
   u32 client_index;
   u32 context;
   vl_api_test_address_t addr;
+  vl_api_test_address2_t addr2;
+};
+
+// Tagged union directly in a message, before its discriminator
+autoreply autoendian define test_union_direct
+{
+  u32 client_index;
+  u32 context;
+  vl_api_test_address_union2_t un [discriminator=af];
+  vl_api_address_family_t af;
+};
+
+// Types from ip_types.api with well-known implementations generated
+autoreply autoendian define test_ip_types
+{
+  u32 client_index;
+  u32 context;
+  vl_api_ip4_address_t ip4;
+  vl_api_ip6_address_t ip6;
+  vl_api_address_t addr4;
+  vl_api_address_t addr6;
+  vl_api_ip4_prefix_t ip4_prefix;
+  vl_api_ip6_prefix_t ip6_prefix;
+  vl_api_prefix_t prefix;
+  vl_api_address_with_prefix_t addr_with_prefix;
+  vl_api_ip4_address_with_prefix_t ip4_addr_with_prefix;
+  vl_api_ip6_address_with_prefix_t ip6_addr_with_prefix;
+  vl_api_mprefix_t mprefix;
 };
 
 autoendian define test_variable_array_u32 {
@@ -189,4 +229,25 @@ autoreply autoendian define test_process_node
 service {
   rpc test_stream_get returns test_stream_get_reply
     stream test_stream_details;
+};
+
+counters test_process {
+  buffer_allocation {
+    severity error;
+    type counter64;
+    units "packets";
+    description "Buffer allocation";
+  };
+  deny_policy_updated {
+    severity info;
+    type counter64;
+    units "packets";
+    description "Deny policy updates";
+  };
+  unused {
+    severity warn;
+    type counter64;
+    units "packets";
+    description "Never incremented, ensures warn severity is supported";
+  };
 };

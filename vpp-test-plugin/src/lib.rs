@@ -6,7 +6,7 @@ use lazy_static::lazy_static;
 use std::{
     collections::HashSet,
     fmt,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     pin::pin,
     ptr::NonNull,
     sync::{LazyLock, Mutex, atomic::AtomicU64},
@@ -41,10 +41,18 @@ use vpp_plugin::{
     vppinfra::{error::ErrorStack, unlikely},
 };
 
-use crate::test_types_api::{
-    TEST_ADDRESS_IP4, TEST_ADDRESS_IP6, TEST_NODE_TYPE_X1, TEST_NODE_TYPE_X4, TestAddressUnion,
-    TestIp4Address,
+use crate::ip_types_api::{
+    ADDRESS_IP4, ADDRESS_IP6, Address, AddressFamily, AddressWithPrefix, Ip4AddressWithPrefix,
+    Ip4Prefix, Ip6AddressWithPrefix, Ip6Prefix, Mprefix, Prefix, UnknownAddressFamily,
 };
+use crate::test_api::TestProcessErrorCounter;
+use crate::test_types_api::{TEST_NODE_TYPE_X1, TEST_NODE_TYPE_X4, TestIp4Address, TestIp6Address};
+
+// Only some of VPP's IP types are used by the test plugin
+#[allow(dead_code)]
+mod ip_types_api {
+    include!(concat!(env!("OUT_DIR"), "/src/ip_types_api.rs"));
+}
 
 mod test_api {
     include!(concat!(env!("OUT_DIR"), "/src/test_api.rs"));
@@ -748,53 +756,13 @@ impl PartialEq for test_types_api::TestIp6Address {
     }
 }
 
-impl std::fmt::Debug for test_types_api::TestAddress {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        unsafe {
-            if self.af == TEST_ADDRESS_IP4 {
-                self.un.ip4.fmt(f)
-            } else if self.af == TEST_ADDRESS_IP6 {
-                self.un.ip6.fmt(f)
-            } else {
-                write!(f, "Unknown af {:?}", self.af)
-            }
-        }
-    }
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for test_types_api::TestAddress {
-    fn default() -> Self {
-        Self {
-            af: Default::default(),
-            un: TestAddressUnion {
-                ip4: TestIp4Address::default(),
-            },
-        }
-    }
-}
-
-impl PartialEq for test_types_api::TestAddress {
-    fn eq(&self, other: &Self) -> bool {
-        if self.af != other.af {
-            return false;
-        }
-        unsafe {
-            if self.af == TEST_ADDRESS_IP4 {
-                self.un.ip4 == other.un.ip4
-            } else if self.af == TEST_ADDRESS_IP6 {
-                self.un.ip6 == other.un.ip6
-            } else {
-                false
-            }
-        }
-    }
-}
-
-impl ::vpp_plugin::vlibapi::EndianSwap for test_types_api::TestAddressUnion {
-    unsafe fn endian_swap(&mut self, to_net: bool) {
-        let _ = to_net;
-        // no-op
+/// Returns an error, printing the mismatch, if `actual` isn't equal to `expected`
+fn check_eq<T: PartialEq + fmt::Debug>(what: &str, actual: T, expected: T) -> Result<(), i32> {
+    if actual == expected {
+        Ok(())
+    } else {
+        println!("{what}: expected {expected:?}, but got {actual:?}");
+        Err(VNET_ERR_INVALID_ARGUMENT.into())
     }
 }
 
@@ -809,14 +777,14 @@ impl test_api::Handlers for ApiHandler {
 
         match mp.node_type {
             TEST_NODE_TYPE_X1 => {
-                if mp.enable {
+                if mp.enable != 0 {
                     TEST_FEAT.enable(vm, sw_if_index, ())?;
                 } else {
                     TEST_FEAT.disable(vm, sw_if_index)?;
                 }
             }
             TEST_NODE_TYPE_X4 => {
-                if mp.enable {
+                if mp.enable != 0 {
                     TESTX4_FEAT.enable(vm, sw_if_index, ())?;
                 } else {
                     TESTX4_FEAT.disable(vm, sw_if_index)?;
@@ -948,11 +916,11 @@ impl test_api::Handlers for ApiHandler {
         mp: &test_api::TestUnion,
     ) -> Result<vlibapi::Message<test_api::TestUnionReply>, i32> {
         unsafe {
-            if mp.addr.af == TEST_ADDRESS_IP4 {
+            if mp.addr.af == ADDRESS_IP4 {
                 if mp.addr.un.ip4.0 != [1, 2, 3, 4] {
                     return Err(VNET_ERR_INVALID_ARGUMENT.into());
                 }
-            } else if mp.addr.af == TEST_ADDRESS_IP6 {
+            } else if mp.addr.af == ADDRESS_IP6 {
                 if mp.addr.un.ip6.0 != [1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0]
                 {
                     return Err(VNET_ERR_INVALID_ARGUMENT.into());
@@ -961,6 +929,140 @@ impl test_api::Handlers for ApiHandler {
                 return Err(VNET_ERR_INVALID_ARGUMENT.into());
             }
         }
+        Ok(Default::default())
+    }
+
+    fn test_union_direct(
+        _vm: &vlib::BarrierHeldMainRef,
+        mp: &test_api::TestUnionDirect,
+    ) -> Result<vlibapi::Message<test_api::TestUnionDirectReply>, i32> {
+        println!("test_union_direct({:?})", mp);
+        // Exercise the generated Default and PartialEq for a message containing a tagged union.
+        // The union is zero-initialised by Default, so setting a different discriminator than
+        // the default one and comparing is fine.
+        let mut expected = test_api::TestUnionDirect {
+            client_index: mp.client_index,
+            context: mp.context,
+            af: mp.af,
+            ..Default::default()
+        };
+        if mp.af == ADDRESS_IP4 {
+            expected.un.ip4 = TestIp4Address([1, 2, 3, 4]);
+        } else if mp.af == ADDRESS_IP6 {
+            expected.un.ip6 =
+                TestIp6Address([1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0]);
+        } else {
+            return Err(VNET_ERR_INVALID_ARGUMENT.into());
+        }
+        if *mp != expected {
+            return Err(VNET_ERR_INVALID_ARGUMENT.into());
+        }
+        Ok(Default::default())
+    }
+
+    fn test_ip_types(
+        _vm: &vlib::BarrierHeldMainRef,
+        mp: &test_api::TestIpTypes,
+    ) -> Result<vlibapi::Message<test_api::TestIpTypesReply>, i32> {
+        println!("test_ip_types({:?})", mp);
+        let ip4 = Ipv4Addr::new(192, 0, 2, 1);
+        let ip6 = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+
+        // Exercise the generated conversions from std types, Default and PartialEq
+        let mut mprefix = Mprefix {
+            af: ADDRESS_IP6,
+            grp_address_length: 128,
+            ..Default::default()
+        };
+        mprefix.grp_address.ip6 = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1).into();
+        mprefix.src_address.ip6 = ip6.into();
+        let expected = test_api::TestIpTypes {
+            client_index: mp.client_index,
+            context: mp.context,
+            ip4: ip4.into(),
+            ip6: ip6.into(),
+            addr4: IpAddr::from(ip4).into(),
+            addr6: IpAddr::from(ip6).into(),
+            ip4_prefix: Ip4Prefix {
+                address: Ipv4Addr::new(192, 0, 2, 0).into(),
+                len: 24,
+            },
+            ip6_prefix: Ip6Prefix {
+                address: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0).into(),
+                len: 32,
+            },
+            prefix: Prefix {
+                address: IpAddr::from(Ipv4Addr::new(198, 51, 100, 0)).into(),
+                len: 24,
+            },
+            addr_with_prefix: AddressWithPrefix(Prefix {
+                address: IpAddr::from(ip6).into(),
+                len: 64,
+            }),
+            ip4_addr_with_prefix: Ip4AddressWithPrefix(Ip4Prefix {
+                address: Ipv4Addr::new(10, 0, 0, 1).into(),
+                len: 8,
+            }),
+            ip6_addr_with_prefix: Ip6AddressWithPrefix(Ip6Prefix {
+                address: ip6.into(),
+                len: 64,
+            }),
+            mprefix,
+            ..Default::default()
+        };
+        check_eq("message", *mp, expected)?;
+
+        // Exercise the generated conversions to std types
+        check_eq("ip4 to std", Ipv4Addr::from(mp.ip4), ip4)?;
+        check_eq("ip6 to std", Ipv6Addr::from(mp.ip6), ip6)?;
+        check_eq("addr4 to std", IpAddr::try_from(mp.addr4), Ok(ip4.into()))?;
+        check_eq("addr6 to std", IpAddr::try_from(mp.addr6), Ok(ip6.into()))?;
+        let unknown = Address {
+            af: AddressFamily(2),
+            ..Default::default()
+        };
+        check_eq(
+            "unknown address to std",
+            IpAddr::try_from(unknown),
+            Err(UnknownAddressFamily(AddressFamily(2))),
+        )?;
+
+        // Exercise the generated Debug implementations
+        let debug = [
+            (format!("{:?}", { mp.ip4 }), "192.0.2.1"),
+            (format!("{:?}", { mp.ip6 }), "2001:db8::1"),
+            (format!("{:?}", { mp.addr4 }), "192.0.2.1"),
+            (format!("{:?}", { mp.addr6 }), "2001:db8::1"),
+            (format!("{:?}", { mp.ip4_prefix }), "192.0.2.0/24"),
+            (format!("{:?}", { mp.ip6_prefix }), "2001:db8::/32"),
+            (format!("{:?}", { mp.prefix }), "198.51.100.0/24"),
+            (format!("{:?}", { mp.addr_with_prefix }), "2001:db8::1/64"),
+            (format!("{:?}", { mp.ip4_addr_with_prefix }), "10.0.0.1/8"),
+            (
+                format!("{:?}", { mp.ip6_addr_with_prefix }),
+                "2001:db8::1/64",
+            ),
+            (
+                format!("{:?}", { mp.mprefix }),
+                "Mprefix { af: ADDRESS_IP6, grp_address_length: 128, grp_address: ff02::1, src_address: 2001:db8::1 }",
+            ),
+            (format!("{:?}", Address::default()), "0.0.0.0"),
+            (format!("{:?}", unknown), "<unknown address family 2>"),
+            (
+                format!(
+                    "{:?}",
+                    Prefix {
+                        address: unknown,
+                        len: 0
+                    }
+                ),
+                "<unknown address family 2>/0",
+            ),
+        ];
+        for (actual, expected) in &debug {
+            check_eq("Debug", actual.as_str(), expected)?;
+        }
+
         Ok(Default::default())
     }
 
@@ -1087,7 +1189,7 @@ impl test_api::Handlers for ApiHandler {
         vm: &vlib::BarrierHeldMainRef,
         mp: &test_api::TestBarrierRwLock,
     ) -> Result<vlibapi::Message<test_api::TestBarrierRwLockReply>, i32> {
-        if mp.enable {
+        if mp.enable != 0 {
             *TEST_NODE.udp_src_port_deny_policy.write(vm) = Some(7);
         } else {
             *TEST_NODE.udp_src_port_deny_policy.write(vm) = None;
@@ -1103,7 +1205,7 @@ impl test_api::Handlers for ApiHandler {
         // node which doesn't
         TEST_PROCESS_NODE
             .channel_sender()
-            .send(ProcessMessage::SetDenyPolicy(mp.enable.then_some(7)))
+            .send(ProcessMessage::SetDenyPolicy((mp.enable != 0).then_some(7)))
             .map_err(|_| VNET_ERR_INVALID_ARGUMENT)?;
         Ok(Default::default())
     }
@@ -1112,7 +1214,7 @@ impl test_api::Handlers for ApiHandler {
         _vm: &vlib::BarrierHeldMainRef,
         mp: &test_api::TestProcessNode,
     ) -> Result<vlibapi::Message<test_api::TestProcessNodeReply>, i32> {
-        if mp.enable {
+        if mp.enable != 0 {
             TEST_PROCESS_NODE
                 .channel_sender()
                 .send(ProcessMessage::Enable(Ipv4Addr::from_octets(mp.dest.0)))
@@ -1144,13 +1246,10 @@ enum TestProcessNextNode {
     Ip4Lookup,
 }
 
-#[derive(ErrorCounters)]
-enum TestProcessErrorCounter {
-    #[error_counter(description = "Buffer allocation", severity = ERROR)]
-    BufferAllocation,
-    #[error_counter(description = "Deny policy updates", severity = INFO)]
-    DenyPolicyUpdated,
-}
+// The `unused` counter only exists to check that a `warn` severity in the API file compiles, so
+// nothing increments it. Use it here to keep the dead_code lint quiet without disabling the lint
+// for the other counters.
+const _: TestProcessErrorCounter = TestProcessErrorCounter::Unused;
 
 #[vlib_process_node(
     name = "test-process",
@@ -1341,4 +1440,197 @@ vlib_plugin_register! {
     version: "1.0",
     description: "Test",
     version_required: vpp_plugin::VPP_BUILD_VER,
+}
+
+#[cfg(test)]
+mod test_tagged_union_api {
+    include!(concat!(env!("OUT_DIR"), "/src/test_tagged_union_api.rs"));
+}
+
+#[cfg(test)]
+mod tests {
+    use vpp_plugin::vlibapi::EndianSwap;
+
+    use crate::{
+        test_tagged_union_api::{
+            TestDirTagged, TestDirUnion, TestFlagsTagged, TestFlagsUnion, TestUnionFlags,
+        },
+        test_types_api::{TestDir2, TestType},
+    };
+
+    /// Swap to network order and check the expected result, then swap back
+    fn round_trip_flags(value: TestFlagsTagged, check: impl Fn(&TestFlagsTagged)) {
+        let mut swapped = value;
+        unsafe { swapped.endian_swap(true) };
+        let flags = swapped.flags;
+        let expected_flags = value.flags;
+        assert_eq!(flags.bits(), expected_flags.bits().to_be());
+        check(&swapped);
+        unsafe { swapped.endian_swap(false) };
+        let flags = swapped.flags;
+        assert_eq!(flags, expected_flags);
+    }
+
+    #[test]
+    fn endian_swap_enumflag_primitive_arm() {
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion { a: 0x01020304 },
+            flags: TestUnionFlags::A,
+        };
+        round_trip_flags(value, |swapped| {
+            assert_eq!(unsafe { swapped.un.a }, 0x01020304u32.to_be());
+        });
+        assert_eq!(unsafe { value.un.a }, 0x01020304);
+
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion { b: 0x0102 },
+            flags: TestUnionFlags::B,
+        };
+        round_trip_flags(value, |swapped| {
+            assert_eq!(unsafe { swapped.un.b }, 0x0102u16.to_be());
+        });
+    }
+
+    #[test]
+    fn endian_swap_enumflag_typedef_arm() {
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion {
+                c: TestType { field1: 0x01020304 },
+            },
+            flags: TestUnionFlags::C,
+        };
+        round_trip_flags(value, |swapped| {
+            let field1 = unsafe { swapped.un.c.field1 };
+            assert_eq!(field1, 0x01020304u32.to_be());
+        });
+    }
+
+    #[test]
+    fn endian_swap_enumflag_no_matching_case() {
+        // A combination of flags doesn't select any arm, so the union is left untouched
+        for flags in [
+            TestUnionFlags::A | TestUnionFlags::B,
+            TestUnionFlags::empty(),
+        ] {
+            let value = TestFlagsTagged {
+                un: TestFlagsUnion { a: 0x01020304 },
+                flags,
+            };
+            round_trip_flags(value, |swapped| {
+                assert_eq!(unsafe { swapped.un.a }, 0x01020304);
+            });
+        }
+    }
+
+    #[test]
+    fn endian_swap_imported_enumflag() {
+        let mut value = TestDirTagged {
+            dir: TestDir2::RX,
+            un: TestDirUnion {
+                rx: 0x0102030405060708,
+            },
+        };
+        unsafe { value.endian_swap(true) };
+        assert_eq!(unsafe { value.un.rx }, 0x0102030405060708u64.to_be());
+        unsafe { value.endian_swap(false) };
+        assert_eq!(unsafe { value.un.rx }, 0x0102030405060708);
+        let dir = value.dir;
+        assert_eq!(dir, TestDir2::RX);
+
+        let mut value = TestDirTagged {
+            dir: TestDir2::TX,
+            un: TestDirUnion { tx: -0x01020304 },
+        };
+        unsafe { value.endian_swap(true) };
+        assert_eq!(unsafe { value.un.tx }, (-0x01020304i32).to_be());
+        unsafe { value.endian_swap(false) };
+        assert_eq!(unsafe { value.un.tx }, -0x01020304);
+    }
+
+    #[test]
+    fn debug_enumflag_selects_arm() {
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion { a: 5 },
+            flags: TestUnionFlags::A,
+        };
+        assert_eq!(
+            format!("{:?}", value),
+            "TestFlagsTagged { un: 5, flags: A }"
+        );
+
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion {
+                c: TestType { field1: 6 },
+            },
+            flags: TestUnionFlags::C,
+        };
+        assert_eq!(
+            format!("{:?}", value),
+            "TestFlagsTagged { un: TestType { field1: 6 }, flags: C }"
+        );
+
+        // A combination of flags doesn't select any arm
+        let value = TestFlagsTagged {
+            un: TestFlagsUnion { a: 5 },
+            flags: TestUnionFlags::A | TestUnionFlags::B,
+        };
+        assert_eq!(
+            format!("{:?}", value),
+            "TestFlagsTagged { un: <unknown>, flags: A | B }"
+        );
+
+        let value = TestDirTagged {
+            dir: TestDir2::TX,
+            un: TestDirUnion { tx: -7 },
+        };
+        assert_eq!(format!("{:?}", value), "TestDirTagged { dir: TX, un: -7 }");
+    }
+
+    #[test]
+    fn partial_eq_enumflag_compares_selected_arm() {
+        // b overlaps the start of a, so set a to differ in the bytes outside of b
+        let mut x = TestFlagsTagged {
+            un: TestFlagsUnion { a: u32::MAX },
+            flags: TestUnionFlags::B,
+        };
+        let mut y = TestFlagsTagged {
+            un: TestFlagsUnion { a: 0 },
+            flags: TestUnionFlags::B,
+        };
+        x.un.b = 7;
+        y.un.b = 7;
+        assert_eq!(x, y);
+        y.un.b = 8;
+        assert_ne!(x, y);
+
+        // The discriminators must match
+        let x = TestDirTagged {
+            dir: TestDir2::TX,
+            un: TestDirUnion { rx: 0 },
+        };
+        let mut y = x;
+        assert_eq!(x, y);
+        y.dir = TestDir2::RX;
+        assert_ne!(x, y);
+
+        // Without a selected arm there's no way of knowing which bytes are meaningful
+        let x = TestFlagsTagged {
+            un: TestFlagsUnion { a: 0 },
+            flags: TestUnionFlags::A | TestUnionFlags::B,
+        };
+        assert_ne!(x, x);
+    }
+
+    #[test]
+    fn default_enumflag() {
+        let value = TestFlagsTagged::default();
+        let flags = value.flags;
+        assert_eq!(flags, TestUnionFlags::empty());
+        assert_eq!(unsafe { value.un.a }, 0);
+
+        let value = TestDirTagged::default();
+        let dir = value.dir;
+        assert_eq!(dir, TestDir2::empty());
+        assert_eq!(unsafe { value.un.rx }, 0);
+    }
 }
