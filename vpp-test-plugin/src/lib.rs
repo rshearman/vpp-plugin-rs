@@ -16,8 +16,8 @@ use std::{
 use vpp_plugin::{
     ErrorCounters, NextNodes,
     bindings::{
-        ip4_header_t, vnet_api_error_t_VNET_API_ERROR_INVALID_VALUE,
-        vnet_helper_ip4_header_checksum,
+        ip4_header_t, vlib_worker_thread_barrier_held,
+        vnet_api_error_t_VNET_API_ERROR_INVALID_VALUE, vnet_helper_ip4_header_checksum,
     },
     vlib::{
         self, BufferIndex,
@@ -713,6 +713,35 @@ fn counter_test_command(vm: &mut vlib::BarrierHeldMainRef, input: &str) -> Resul
         }
     } else {
         return Err(ErrorStack::msg(format!("Unrecognised input {}", input)));
+    }
+
+    Ok(())
+}
+
+/// MP-safe CLI command, which VPP runs without taking the barrier
+///
+/// Only meaningful with worker threads, since without them VPP reports the barrier as always
+/// held.
+#[vlib_cli_command(path = "rust-test mp-safe", short_help = "rust-test mp-safe")]
+fn mp_safe_test_command(vm: &mut vlib::MainRef, _input: &str) -> Result<(), ErrorStack> {
+    // SAFETY: called on the main thread, which is all that's required
+    if unsafe { vlib_worker_thread_barrier_held() } != 0 {
+        return Err(ErrorStack::msg("Expected barrier not to be held on entry"));
+    }
+    {
+        let _guard = vm.barrier_sync();
+        // SAFETY: called on the main thread, which is all that's required
+        if unsafe { vlib_worker_thread_barrier_held() } == 0 {
+            return Err(ErrorStack::msg(
+                "Expected barrier to be held after barrier_sync",
+            ));
+        }
+    }
+    // SAFETY: called on the main thread, which is all that's required
+    if unsafe { vlib_worker_thread_barrier_held() } != 0 {
+        return Err(ErrorStack::msg(
+            "Expected barrier not to be held after the guard is dropped",
+        ));
     }
 
     Ok(())

@@ -1124,6 +1124,16 @@ pub fn vnet_feature_init(ts: TokenStream) -> TokenStream {
 /// - `path`: (required, string literal) The CLI command path.
 /// - `short_help`: (optional, string literal) A short help string for the CLI command.
 ///
+/// # Function signature
+///
+/// The function must have the signature `fn(&mut M, &str) -> Result<(), ErrorStack>`, where
+/// `M` is one of:
+///
+/// - `vlib::BarrierHeldMainRef`: VPP takes the main thread barrier before calling the function.
+/// - `vlib::MainRef`: the command is registered as MP-safe, so VPP calls the function without
+///   taking the barrier. The function can take the barrier itself for just the part of its work
+///   that needs it, using `MainRef::barrier_sync`.
+///
 /// # Examples
 ///
 /// ```
@@ -1133,6 +1143,18 @@ pub fn vnet_feature_init(ts: TokenStream) -> TokenStream {
 ///     short_help = "rust-example <interface-name> [disable]",
 /// )]
 /// fn enable_disable_command(_vm: &mut vlib::BarrierHeldMainRef, _input: &str) -> Result<(), ErrorStack> {
+///     Ok(())
+/// }
+/// ```
+///
+/// An MP-safe command:
+///
+/// ```
+/// # use vpp_plugin::{vlib_cli_command, vlib, vppinfra::error::ErrorStack};
+/// #[vlib_cli_command(path = "rust-example show", short_help = "rust-example show")]
+/// fn show_command(vm: &mut vlib::MainRef, _input: &str) -> Result<(), ErrorStack> {
+///     // Only hold the barrier while it is needed
+///     let _guard = vm.barrier_sync();
 ///     Ok(())
 /// }
 /// ```
@@ -1209,7 +1231,7 @@ pub fn vlib_cli_command(attributes: TokenStream, function: TokenStream) -> Token
             ) -> *mut ::vpp_plugin::bindings::clib_error_t
             {
                 let s = ::vpp_plugin::vppinfra::unformat::raw_unformat_line_input_to_string(input);
-                if let Err(e) = #ident(::vpp_plugin::vlib::BarrierHeldMainRef::from_ptr_mut(vm), s.as_str()) {
+                if let Err(e) = #ident(::vpp_plugin::vlib::cli::CliMainRef::from_ptr_mut(vm), s.as_str()) {
                     e.into_raw()
                 } else {
                     std::ptr::null_mut()
@@ -1221,7 +1243,7 @@ pub fn vlib_cli_command(attributes: TokenStream, function: TokenStream) -> Token
                 short_help: #short_help,
                 long_help: std::ptr::null_mut(), // TODO
                 function: Some(#raw_fn_ident),
-                is_mp_safe: 0,
+                is_mp_safe: ::vpp_plugin::vlib::cli::cli_is_mp_safe(#ident),
                 ..::vpp_plugin::bindings::vlib_cli_command_t::new()
             });
 

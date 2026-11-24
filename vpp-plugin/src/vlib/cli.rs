@@ -2,9 +2,92 @@
 
 use std::cell::UnsafeCell;
 
-use crate::bindings::{
-    vlib_cli_command_t, vlib_helper_get_global_main, vlib_helper_remove_cli_command,
+use crate::{
+    bindings::{
+        uword, vlib_cli_command_t, vlib_helper_get_global_main, vlib_helper_remove_cli_command,
+        vlib_main_t,
+    },
+    vlib::{BarrierHeldMainRef, MainRef},
+    vppinfra::error::ErrorStack,
 };
+
+mod sealed {
+    pub trait Sealed {}
+
+    impl Sealed for crate::vlib::MainRef {}
+    impl Sealed for crate::vlib::BarrierHeldMainRef {}
+}
+
+/// Main context type that a CLI command function can take as its first argument
+///
+/// This is used by the [`crate::vlib_cli_command`] macro to work out whether the CLI command
+/// is MP-safe, based on the type of the function's first argument:
+///
+/// - [`BarrierHeldMainRef`]: the command is not MP-safe, so VPP takes the main thread barrier
+///   before calling it.
+/// - [`MainRef`]: the command is MP-safe, so VPP calls it without taking the barrier. The
+///   command may still take the barrier itself for part of its work, using
+///   [`MainRef::barrier_sync`].
+///
+/// This trait is sealed and cannot be implemented outside of this crate.
+///
+/// # Safety
+///
+/// Implementors must be `repr(transparent)` wrappers over `vlib_main_t` and `IS_MP_SAFE` must
+/// only be non-zero if the type doesn't imply that the main thread barrier is held.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be the main context argument of a CLI command function",
+    note = "use `&mut vlib::MainRef` for an MP-safe command, or `&mut vlib::BarrierHeldMainRef` for VPP to take the barrier before calling the command"
+)]
+pub unsafe trait CliMainRef: sealed::Sealed {
+    /// Value for the `is_mp_safe` field of `vlib_cli_command_t`
+    const IS_MP_SAFE: uword;
+
+    /// Creates a `&mut Self` directly from a pointer
+    ///
+    /// # Safety
+    ///
+    /// - The pointer must be the `vlib_main_t` that VPP passed to a CLI command function whose
+    ///   `is_mp_safe` field was set to [`Self::IS_MP_SAFE`].
+    /// - The returned reference must not outlive the call to the CLI command function.
+    unsafe fn from_ptr_mut<'a>(ptr: *mut vlib_main_t) -> &'a mut Self;
+}
+
+// SAFETY: `MainRef` is a `repr(transparent)` wrapper over `vlib_main_t` and doesn't imply the
+// barrier is held.
+unsafe impl CliMainRef for MainRef {
+    const IS_MP_SAFE: uword = 1;
+
+    unsafe fn from_ptr_mut<'a>(ptr: *mut vlib_main_t) -> &'a mut Self {
+        // SAFETY: VPP passes a valid `vlib_main_t` for the main thread to CLI command functions,
+        // and the caller ensures the reference doesn't outlive the call.
+        unsafe { MainRef::from_ptr_mut(ptr) }
+    }
+}
+
+// SAFETY: `BarrierHeldMainRef` is a `repr(transparent)` wrapper over `vlib_main_t` and
+// `IS_MP_SAFE` is zero.
+unsafe impl CliMainRef for BarrierHeldMainRef {
+    const IS_MP_SAFE: uword = 0;
+
+    unsafe fn from_ptr_mut<'a>(ptr: *mut vlib_main_t) -> &'a mut Self {
+        // SAFETY: VPP passes a valid `vlib_main_t` for the main thread to CLI command functions,
+        // takes the barrier before calling non-MP-safe CLI commands, and the caller ensures the
+        // reference doesn't outlive the call.
+        unsafe { BarrierHeldMainRef::from_ptr_mut(ptr) }
+    }
+}
+
+/// Returns the `is_mp_safe` value for a CLI command function
+///
+/// Used by the [`crate::vlib_cli_command`] macro. Taking a function pointer both infers `M`
+/// from the function's first argument and checks that the function has the expected signature.
+#[doc(hidden)]
+pub const fn cli_is_mp_safe<M: CliMainRef>(
+    _function: fn(&mut M, &str) -> Result<(), ErrorStack>,
+) -> uword {
+    M::IS_MP_SAFE
+}
 
 /// Registration for CLI command
 ///

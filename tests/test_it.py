@@ -551,6 +551,15 @@ class IntegrationTestCase(IntegrationTestBase):
         self.cli_verify_no_response(f"rust-test counter simple")
         self.cli_verify_no_response(f"rust-test counter combined")
 
+    def test_cli_mp_safe_registration(self):
+        """CLI commands are MP-safe only if they take a MainRef"""
+        mp_safe = [l.strip() for l in self.vapi.cli("show cli mp-safe").splitlines()]
+        not_mp_safe = [l.strip() for l in self.vapi.cli("show cli not-mp-safe").splitlines()]
+        self.assertIn("rust-test mp-safe", mp_safe)
+        self.assertNotIn("rust-test mp-safe", not_mp_safe)
+        self.assertIn("rust-test message", not_mp_safe)
+        self.assertNotIn("rust-test message", mp_safe)
+
     def test_type_in_message(self):
         """API with type nested in message"""
         self.vapi.api(
@@ -809,6 +818,10 @@ class WorkerIntegrationTestCase(IntegrationTestBase):
 
         # Clean up
         self.enable_disable_api(self.pg0.sw_if_index, False)
+
+    def test_cli_mp_safe(self):
+        """MP-safe CLI command runs without the barrier held"""
+        self.cli_verify_no_response("rust-test mp-safe")
 
 
 if __name__ == "__main__":
