@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::File,
     io::read_to_string,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -23,6 +24,7 @@ pub enum Statement {
         options: Vec<OptionStatement>,
         fields: Vec<Field>,
         flags: Vec<Flag>,
+        comment: Option<String>,
     },
     Typedef {
         field: Field,
@@ -46,6 +48,8 @@ pub enum Statement {
     },
     Import(String),
     Service(Vec<Service>),
+    Counters(Counters),
+    Paths(Vec<CounterPath>),
 }
 
 fn options_from_block_statements(block_statements: &[BlockStatement]) -> Vec<OptionStatement> {
@@ -93,12 +97,14 @@ impl Statement {
         name: String,
         block_statements: Vec<BlockStatement>,
         flags: Vec<Flag>,
+        comment: Option<String>,
     ) -> Self {
         Self::TypedefBlock {
             name,
             options: options_from_block_statements(&block_statements),
             fields: fields_from_block_statements(block_statements),
             flags,
+            comment,
         }
     }
 
@@ -117,29 +123,18 @@ fn crc_data_for_fields(fields: &[Field]) -> String {
     format!("[{}]", crc_data_vec.join(", "))
 }
 
-fn crc_data_for_enum_block_statements(block_statements: &[EnumStatement]) -> String {
-    let mut next_value = 0;
+/// CRC data for an enum, given its block statements and the variants resolved from them
+fn crc_data_for_enum(block_statements: &[EnumStatement], variants: &[EnumVariant]) -> String {
     let crc_data_vec: Vec<_> = block_statements
         .iter()
-        .filter_map(|s| {
-            match s {
-                EnumStatement::Variant {
-                    id,
-                    value: explicit_value,
-                    options,
-                } => {
-                    let value = if let Some(value) = explicit_value {
-                        *value
-                    } else {
-                        next_value
-                    };
-                    next_value = value + 1;
-                    // Variants marked as backwards_compatible aren't part of the CRC calculation
-                    if options.iter().any(|o| o.option == "backwards_compatible") {
-                        None
-                    } else {
-                        Some(format!("['{id}', {value}]"))
-                    }
+        .zip(variants)
+        .filter_map(|(s, variant)| match s {
+            EnumStatement::Variant { options, .. } => {
+                // Variants marked as backwards_compatible aren't part of the CRC calculation
+                if options.iter().any(|o| o.option == "backwards_compatible") {
+                    None
+                } else {
+                    Some(format!("['{}', {}]", variant.id, variant.value))
                 }
             }
         })
@@ -147,9 +142,53 @@ fn crc_data_for_enum_block_statements(block_statements: &[EnumStatement]) -> Str
     format!("[{}]", crc_data_vec.join(", "))
 }
 
+/// Check that variants marked as backwards_compatible only appear at the end of the enum
+///
+/// Since otherwise the values of non-backwards_compatible variants may have changed.
+fn check_enum_backwards_compatible_last(
+    name: &str,
+    block_statements: &[EnumStatement],
+) -> Result<(), Error> {
+    let mut seen_backwards_compatible = false;
+    for s in block_statements {
+        match s {
+            EnumStatement::Variant { id, options, .. } => {
+                if options.iter().any(|o| o.option == "backwards_compatible") {
+                    seen_backwards_compatible = true;
+                } else if seen_backwards_compatible {
+                    return Err(Error::BackwardsCompatibleEnumVariantNotLast(
+                        id.clone(),
+                        name.to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Check that no two variants of an enum or enumflag share the same value
+///
+/// Values may be explicit or implicitly derived from the previous variant, so this must be
+/// checked on the resolved variants.
+fn check_enum_unique_values(name: &str, variants: &[EnumVariant]) -> Result<(), Error> {
+    let mut seen_values = HashMap::new();
+    for variant in variants {
+        if let Some(other_variant) = seen_values.insert(variant.value, &variant.id) {
+            return Err(Error::DuplicateEnumValue {
+                r#enum: name.to_string(),
+                variant: variant.id.clone(),
+                other_variant: other_variant.clone(),
+                value: variant.value,
+            });
+        }
+    }
+    Ok(())
+}
+
 impl Statement {
-    fn crc_data(&self) -> Option<String> {
-        match self {
+    fn crc_data(&self) -> Result<Option<String>, Error> {
+        Ok(match self {
             Self::Define { fields, .. } => Some(crc_data_for_fields(fields)),
             Self::Option(option_statement) => Some(option_statement.option.clone()),
             Self::TypedefBlock { fields, .. } => Some(crc_data_for_fields(fields)),
@@ -159,12 +198,38 @@ impl Statement {
             }
             Self::Union { fields, .. } => Some(crc_data_for_fields(fields)),
             Self::Enum {
-                block_statements, ..
-            } => Some(crc_data_for_enum_block_statements(block_statements)),
-            Self::EnumFlag {
-                block_statements, ..
-            } => Some(crc_data_for_enum_block_statements(block_statements)),
-            Self::Import(_) | Self::Service(_) => None,
+                name,
+                block_statements,
+                ..
+            }
+            | Self::EnumFlag {
+                name,
+                block_statements,
+                ..
+            } => {
+                let variants = enum_variants_from_block_statements(name, block_statements)?;
+                Some(crc_data_for_enum(block_statements, &variants))
+            }
+            Self::Import(_) | Self::Service(_) | Self::Counters(_) | Self::Paths(_) => None,
+        })
+    }
+}
+
+/// The value of an option, typed as per vppapigen
+#[derive(Debug, Clone, PartialEq)]
+pub enum OptionValue {
+    Bool(bool),
+    Integer(i128),
+    Float(f64),
+    /// A string literal (without the quotes) or an identifier
+    String(String),
+}
+
+impl OptionValue {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => Some(s),
+            Self::Bool(_) | Self::Integer(_) | Self::Float(_) => None,
         }
     }
 }
@@ -172,7 +237,7 @@ impl Statement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptionStatement {
     option: String,
-    value: Option<String>,
+    value: Option<OptionValue>,
 }
 
 impl OptionStatement {
@@ -180,8 +245,8 @@ impl OptionStatement {
         &self.option
     }
 
-    pub fn value(&self) -> Option<&str> {
-        self.value.as_deref()
+    pub fn value(&self) -> Option<&OptionValue> {
+        self.value.as_ref()
     }
 }
 
@@ -201,15 +266,57 @@ pub enum FieldSize {
     Fixed(u32),
 }
 
+/// Resolved details of a tagged union field, i.e. one with a discriminator option
+#[derive(Debug)]
+pub struct TaggedUnion {
+    /// Name of the sibling field holding the discriminator
+    pub discriminator: String,
+    /// Name of the discriminator's enum or enumflag, without the `vl_api_` prefix and `_t` suffix
+    pub enum_name: String,
+    /// Type entry of the discriminator's enum or enumflag
+    pub r#enum: Arc<TypeEntry>,
+    /// Arms of the union, in declaration order
+    pub arms: Vec<TaggedUnionArm>,
+}
+
+#[derive(Debug)]
+pub struct TaggedUnionArm {
+    /// The union member
+    pub field: Field,
+    /// Enum or enumflag variant selecting this member
+    pub case: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Field {
     pub(crate) r#type: String,
     pub(crate) name: String,
     pub(crate) options: Vec<OptionStatement>,
     pub(crate) size: Option<FieldSize>,
+    /// Populated during processing if the field is a tagged union
+    pub(crate) tagged_union: Option<Arc<TaggedUnion>>,
 }
 
 impl Field {
+    fn new(
+        r#type: String,
+        name: String,
+        options: Vec<OptionStatement>,
+        size: Option<FieldSize>,
+    ) -> Self {
+        Self {
+            r#type,
+            name,
+            options,
+            size,
+            tagged_union: None,
+        }
+    }
+
+    pub fn tagged_union(&self) -> Option<&TaggedUnion> {
+        self.tagged_union.as_deref()
+    }
+
     /// Returns optional description of the count
     fn vla(&self, parser: &ApiParser, other_fields: &[Field]) -> Option<CountDescriptor> {
         if matches!(&self.size, Some(FieldSize::Variable(None))) && self.r#type == "string" {
@@ -223,10 +330,7 @@ impl Field {
                 r#type: count_field.r#type.clone(),
             });
         }
-        if let Some(type_name) = self.r#type.strip_prefix(VL_API_PREFIX)
-            && let Some(type_name) = type_name.strip_suffix(VL_API_SUFFIX)
-            && let Some(type_entry) = parser.global_types_by_name.get(type_name)
-        {
+        if let Ok(Some((_, type_entry))) = parser.lookup_field_type(&self.r#type) {
             let count_descr = type_entry.vla(parser)?;
             match count_descr {
                 CountDescriptor::Field { path, r#type } => {
@@ -246,6 +350,14 @@ impl Field {
         }
         None
     }
+
+    /// Returns the value of the first option with the given name that has a string value
+    fn option_value(&self, option: &str) -> Option<&str> {
+        self.options
+            .iter()
+            .filter(|o| o.option() == option)
+            .find_map(|o| o.value().and_then(OptionValue::as_str))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -263,8 +375,17 @@ pub enum EnumStatement {
     },
 }
 
-fn enum_variants_from_block_statements(block_statements: &[EnumStatement]) -> Vec<EnumVariant> {
-    let mut next_value = 0;
+/// Resolve the values of an enum's variants
+///
+/// As per vppapigen, a variant without an explicit value takes the value of the previous variant
+/// plus one, or zero for the first variant.
+fn enum_variants_from_block_statements(
+    name: &str,
+    block_statements: &[EnumStatement],
+) -> Result<Vec<EnumVariant>, Error> {
+    // None if the previous variant had the maximum value, which is only an error if a variant
+    // without an explicit value follows it
+    let mut next_value = Some(0u32);
     block_statements
         .iter()
         .map(|s| match s {
@@ -273,16 +394,18 @@ fn enum_variants_from_block_statements(block_statements: &[EnumStatement]) -> Ve
                 value: explicit_value,
                 ..
             } => {
-                let value = if let Some(value) = explicit_value {
-                    *value
-                } else {
-                    next_value
+                let value = match explicit_value {
+                    Some(value) => *value,
+                    None => next_value.ok_or_else(|| Error::EnumImplicitValueOverflow {
+                        r#enum: name.to_string(),
+                        variant: id.clone(),
+                    })?,
                 };
-                next_value = value + 1;
-                EnumVariant {
+                next_value = value.checked_add(1);
+                Ok(EnumVariant {
                     id: id.clone(),
                     value,
-                }
+                })
             }
         })
         .collect()
@@ -326,7 +449,130 @@ pub enum Flag {
     DontTrace,
     AutoEndian,
     AutoReply,
-    IndexReply,
+}
+
+#[derive(Debug, Clone)]
+pub struct Counters {
+    id: String,
+    elements: Vec<CounterElement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CounterElement {
+    id: String,
+    statements: Vec<CounterStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub enum CounterStatement {
+    Severity(String),
+    Units(String),
+    Description(String),
+    Type(String),
+}
+
+/// Mapping of a path in the stats segment to a counter set
+///
+/// As per vppapigen, the counter set isn't required to refer to one defined by a `counters`
+/// statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CounterPath {
+    path: String,
+    counter: String,
+}
+
+impl CounterPath {
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn counter(&self) -> &str {
+        &self.counter
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckedCounters {
+    name: String,
+    elements: Vec<CheckedCounterElement>,
+}
+
+impl CheckedCounters {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn elements(&self) -> &[CheckedCounterElement] {
+        &self.elements
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckedCounterElement {
+    id: String,
+    severity: String,
+    r#type: String,
+    units: String,
+    description: String,
+}
+
+impl CheckedCounterElement {
+    pub fn name(&self) -> &str {
+        &self.id
+    }
+
+    pub fn severity(&self) -> &str {
+        &self.severity
+    }
+
+    pub fn r#type(&self) -> &str {
+        &self.r#type
+    }
+
+    pub fn units(&self) -> &str {
+        &self.units
+    }
+
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+}
+
+impl TryFrom<CounterElement> for CheckedCounterElement {
+    type Error = Error;
+
+    fn try_from(e: CounterElement) -> Result<Self, Error> {
+        let mut severity = None;
+        let mut r#type = None;
+        let mut units = None;
+        let mut description = None;
+        for stmt in e.statements {
+            match stmt {
+                CounterStatement::Severity(stmt_severity) => severity = Some(stmt_severity),
+                CounterStatement::Units(stmt_units) => units = Some(stmt_units),
+                CounterStatement::Description(stmt_description) => {
+                    description = Some(stmt_description)
+                }
+                CounterStatement::Type(stmt_type) => r#type = Some(stmt_type),
+            }
+        }
+        Ok(Self {
+            id: e.id.clone(),
+            severity: severity.ok_or(Error::MissingCounterSeverity(e.id.clone()))?,
+            r#type: r#type.ok_or(Error::MissingCounterType(e.id.clone()))?,
+            units: units.ok_or(Error::MissingCounterUnits(e.id.clone()))?,
+            description: description.ok_or(Error::MissingCounterDescription(e.id))?,
+        })
+    }
+}
+
+/// Check that the text between a comment and a statement spans at most one newline
+fn at_most_one_newline(s: &str) -> Result<(), &'static str> {
+    if s.matches('\n').count() <= 1 {
+        Ok(())
+    } else {
+        Err("statement adjacent to comment")
+    }
 }
 
 peg::parser! {
@@ -343,12 +589,12 @@ peg::parser! {
             / enumflag()
             / union()
             / service()
-            // / paths()
-            // / counters()
+            / paths()
+            / counters()
 
         rule define() -> Statement
-            = c:comment() ___ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, vec![], Some(c)) }
-            / c:comment() f:flag_list() _ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, f, Some(c)) }
+            = c:last_comment() comment_gap() "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, vec![], Some(c)) }
+            / c:last_comment() &flags_comment_gap() f:flag_list() _ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, f, Some(c)) }
             / _ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, vec![], None) }
             / f:flag_list() _ "define" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::define(name, b, f, None) }
 
@@ -362,8 +608,11 @@ peg::parser! {
         rule ___ = [' ' | '\t' | '\n' | '\r']*
 
         rule identifier() -> String
-            = id:$(quiet!{['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '_' | '0'..='9']*}) { id.to_string() }
+            = id:$(quiet!{['a'..='z' | 'A'..='Z' | '_'] identifier_char()*}) { id.to_string() }
             / expected!("identifier")
+
+        rule identifier_char()
+            = ['a'..='z' | 'A'..='Z' | '_' | '0'..='9']
 
         rule block_statements() -> Vec<BlockStatement>
             = s:(block_statement()+) { s }
@@ -373,11 +622,14 @@ peg::parser! {
             / d:declaration() { BlockStatement::Declaration(d) }
 
         rule declaration() -> Field
-            = _ t:identifier() __ n:identifier() _ ";" { Field { r#type: t, name: n, options: vec![], size: None } }
-            / _ t:identifier() __ n:identifier() _ "[" _ o:field_options() _ "]" _ ";" { Field { r#type: t, name: n, options: o, size: None } }
-            / _ t:identifier() __ n:identifier() _ "[" _ "]" _ ";" { Field { r#type: t, name: n, options: vec![], size: Some(FieldSize::Variable(None)) } }
-            / _ t:identifier() __ name:identifier() _ "[" _ n:number() _ "]" _ ";" { Field { r#type: t, name, options: vec![], size: Some(FieldSize::Fixed(n)) } }
-            / _ t:identifier() __ n:identifier() _ "[" _ vla:identifier() _ "]" _ ";" { Field { r#type: t, name: n, options: vec![], size: Some(FieldSize::Variable(Some(vla))) } }
+            = _ t:identifier() __ n:identifier() _ ";" { Field::new(t, n, vec![], None) }
+            / _ t:identifier() __ n:identifier() _ "[" _ "]" _ ";" { Field::new(t, n, vec![], Some(FieldSize::Variable(None))) }
+            / _ t:identifier() __ name:identifier() _ "[" _ n:number() _ "]" _ ";" { Field::new(t, name, vec![], Some(FieldSize::Fixed(n))) }
+            // A single identifier in brackets is ambiguous between a VLA length field and a
+            // single option. As per vppapigen, treat it as a VLA, so this must come before
+            // the field_options alternative.
+            / _ t:identifier() __ n:identifier() _ "[" _ vla:identifier() _ "]" _ ";" { Field::new(t, n, vec![], Some(FieldSize::Variable(Some(vla)))) }
+            / _ t:identifier() __ n:identifier() _ "[" _ o:field_options() _ "]" _ ";" { Field::new(t, n, o, None) }
 
         rule number() -> u32
             = "0x" n:$((['0'..='9' | 'a'..='f' | 'A'..='F'])+) {? u32::from_str_radix(n, 16).or(Err("u32")) }
@@ -387,27 +639,64 @@ peg::parser! {
             = _ "option" __ o:identifier() _ ";" { OptionStatement { option: o, value: None } }
             / _ "option" __ o:identifier() _ "=" _ v:option_value() _ ";" { OptionStatement { option: o, value: Some(v) } }
 
-        rule option_value() -> String
-            = "true" { "true".to_string() }
-            / "false" { "false".to_string() }
-            / string_literal()
+        // Keywords and numbers must not be followed by an identifier character, otherwise
+        // "x=true_value" in a field option list would be parsed as the options "x=true" and
+        // "_value".
+        rule option_value() -> OptionValue
+            = "true" !identifier_char() { OptionValue::Bool(true) }
+            / "false" !identifier_char() { OptionValue::Bool(false) }
+            / n:option_number() !identifier_char() { n }
+            / s:string_literal() { OptionValue::String(s) }
+            / i:identifier() { OptionValue::String(i) }
+
+        // As per vppapigen, a hexadecimal integer, or a possibly negative decimal integer or
+        // float, e.g. "0xffffffff", "-1", "1.0" or "1."
+        rule option_number() -> OptionValue
+            = ("0x" / "0X") n:$(['0'..='9' | 'a'..='f' | 'A'..='F']+) {?
+                i128::from_str_radix(n, 16).map(OptionValue::Integer).or(Err("integer"))
+            }
+            / n:$("-"? ['0'..='9']+ "." ['0'..='9']*) {?
+                n.parse().map(OptionValue::Float).or(Err("float"))
+            }
+            / n:$("-"? ['0'..='9']+) {? n.parse().map(OptionValue::Integer).or(Err("integer")) }
 
         rule string_literal() -> String
             = "\"" s:$("\\\"" / [^'"'])* "\"" { s.into_iter().collect() }
 
+        // As per vppapigen, options are separated by whitespace, with an optional trailing
+        // comma only allowed after an option with a value, e.g. "[a=true, b]" or "[a b]",
+        // but not "[a, b]".
         rule field_options() -> Vec<OptionStatement>
-            = field_option() ++ ","
+            = field_option()+
 
         rule field_option() -> OptionStatement
-            = _ o:identifier() _ "=" _ v:option_value() { OptionStatement { option: o, value: Some(v) } }
+            = _ o:identifier() _ "=" _ v:option_value() (_ ",")? { OptionStatement { option: o, value: Some(v) } }
+            / _ o:identifier() { OptionStatement { option: o, value: None } }
 
         rule comment() -> String
             = ___ c:$(quiet!{"/*"} (!"*/"[_])* "*/") { c.to_string() }
             / ___ quiet!{"//"} c:$([^'\n'])* { format!("/*{} */", c.into_iter().collect::<String>()) }
 
+        // As per vppapigen, when multiple comments precede a statement, only the last
+        // one is associated with it.
+        rule last_comment() -> String
+            = (comment() &comment())* c:comment() { c }
+
+        // As per vppapigen, a comment is only associated with the statement following it if
+        // the statement's keyword starts on the same line that the comment ends on, or the
+        // next line, so there must be at most one newline in between.
+        rule comment_gap()
+            = s:$([' ' | '\t' | '\n' | '\r']*) {? at_most_one_newline(s) }
+
+        // As comment_gap(), but for flags followed by the keyword, without consuming them
+        rule flags_comment_gap()
+            = s:$(flag_list() _) {? at_most_one_newline(s) }
+
         rule typedef() -> Statement
-            = f:flag_list() _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, f) }
-            / _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, vec![]) }
+            = c:last_comment() &flags_comment_gap() f:flag_list() _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, f, Some(c)) }
+            / f:flag_list() _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, f, None) }
+            / c:last_comment() comment_gap() "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, vec![], Some(c)) }
+            / _ "typedef" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::typedef_block(name, b, vec![], None) }
             / f:flag_list() _ "typedef" __ d:declaration() { Statement::typedef(d, f) }
             / _ "typedef" __ d:declaration() { Statement::typedef(d, vec![]) }
 
@@ -438,7 +727,7 @@ peg::parser! {
             = s:$("u8" / "u16" / "u32") { s.to_string() }
 
         rule union() -> Statement
-            = c:comment() ___ "union" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::union(name, b, Some(c)) }
+            = c:last_comment() comment_gap() "union" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::union(name, b, Some(c)) }
             / _ "union" __ name:identifier() _ "{" b:block_statements() _ "}" _ ";" { Statement::union(name, b, None) }
 
         rule service() -> Statement
@@ -468,12 +757,38 @@ peg::parser! {
             / _ "dont_trace" { Flag::DontTrace }
             / _ "autoendian" { Flag::AutoEndian }
             / _ "autoreply" { Flag::AutoReply }
-            / _ "indexreply" { Flag::IndexReply }
+
+        rule counters() -> Statement
+            = _ "counters" _ id:identifier() _ "{" e:counter_elements() _ "}" _ ";" { Statement::Counters(Counters { id, elements: e }) }
+
+        rule counter_elements() -> Vec<CounterElement>
+            = e:(counter_element()+) { e }
+
+        rule counter_element() -> CounterElement
+            = _ id:identifier() _ "{" s:counter_statements() _ "}" _ ";" { CounterElement { id, statements: s } }
+
+        rule counter_statements() -> Vec<CounterStatement>
+            = s:(counter_statement()+) { s }
+
+        rule counter_statement() -> CounterStatement
+            = _ "severity" _ sev:identifier() _ ";" { CounterStatement::Severity(sev) }
+            / _ "units" _ s:string_literal() _ ";" { CounterStatement::Units(s) }
+            / _ "description" _ s:string_literal() _ ";" { CounterStatement::Description(s) }
+            / _ "type" _ t:identifier() _ ";" { CounterStatement::Type(t) }
+
+        rule paths() -> Statement
+            = _ "paths" _ "{" p:path_elements() _ "}" _ ";" { Statement::Paths(p) }
+
+        rule path_elements() -> Vec<CounterPath>
+            = p:(path_element()+) { p }
+
+        rule path_element() -> CounterPath
+            = _ path:string_literal() _ counter:string_literal() _ ";" { CounterPath { path, counter } }
     }
 }
 
-pub(crate) const VL_API_PREFIX: &str = "vl_api_";
-pub(crate) const VL_API_SUFFIX: &str = "_t";
+const VL_API_PREFIX: &str = "vl_api_";
+const VL_API_SUFFIX: &str = "_t";
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -515,12 +830,83 @@ pub enum Error {
     ArrayVariableNotFound(String, String),
     #[error("String field \"{0}\" must be declared as an array")]
     StringNotArray(String),
+    #[error(
+        "Variant \"{0}\" in enum \"{1}\" follows a backwards_compatible variant, but backwards_compatible variants must be last"
+    )]
+    BackwardsCompatibleEnumVariantNotLast(String, String),
+    #[error(
+        "Variant \"{variant}\" in enum \"{enum}\" has the same value ({value}) as variant \"{other_variant}\""
+    )]
+    DuplicateEnumValue {
+        r#enum: String,
+        variant: String,
+        other_variant: String,
+        value: u32,
+    },
+    #[error(
+        "Variant \"{variant}\" in enum \"{enum}\" has no explicit value, but the previous variant has the maximum value"
+    )]
+    EnumImplicitValueOverflow { r#enum: String, variant: String },
+    #[error("Unable to find import \"{import}\" in include directories {include_dirs:?}")]
+    ImportNotFound {
+        import: String,
+        include_dirs: Vec<PathBuf>,
+    },
+    #[error("Missing description for counter {0}")]
+    MissingCounterDescription(String),
+    #[error("Missing severity for counter {0}")]
+    MissingCounterSeverity(String),
+    #[error("Missing type for counter {0}")]
+    MissingCounterType(String),
+    #[error("Missing units for counter {0}")]
+    MissingCounterUnits(String),
+    #[error("Discriminator \"{discriminator}\" for field \"{field}\" in \"{name}\" not found")]
+    DiscriminatorNotFound {
+        name: String,
+        field: String,
+        discriminator: String,
+    },
+    #[error("Field \"{field}\" has a discriminator but its type \"{type_name}\" is not a union")]
+    DiscriminatedFieldNotUnion { field: String, type_name: String },
+    #[error(
+        "Discriminator \"{discriminator}\" for field \"{field}\" has type \"{type_name}\" which is not an enum or enumflag"
+    )]
+    DiscriminatorNotEnum {
+        field: String,
+        discriminator: String,
+        type_name: String,
+    },
+    #[error("Field \"{arm}\" in tagged union \"{union}\" is missing a case option")]
+    TaggedUnionMissingCase { union: String, arm: String },
+    #[error(
+        "Case \"{case}\" for field \"{arm}\" in tagged union \"{union}\" is not a variant of enum \"{enum_name}\""
+    )]
+    TaggedUnionCaseNotInEnum {
+        union: String,
+        arm: String,
+        case: String,
+        enum_name: String,
+    },
+    #[error("Case \"{case}\" is used more than once in tagged union \"{union}\"")]
+    TaggedUnionDuplicateCase { union: String, case: String },
 }
 
-fn parse_file(filename: &str) -> Result<Vec<Statement>, Error> {
-    let file = File::open(filename).map_err(|e| Error::Io(filename.to_string(), e))?;
-    let input = read_to_string(file).map_err(|e| Error::Io(filename.to_string(), e))?;
-    api_parser::statement_list(&input).map_err(|e| Error::Parser(filename.to_string(), e))
+/// Derive the module name from the path of an API file
+///
+/// This matches vppapigen: the final extension of the file name is stripped and any remaining
+/// dots are replaced with underscores, e.g. `foo/bar.api` becomes `bar`.
+pub(crate) fn module_name(path: &Path) -> String {
+    path.file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .replace('.', "_")
+}
+
+fn parse_file(filename: &Path) -> Result<Vec<Statement>, Error> {
+    let display_name = || filename.display().to_string();
+    let file = File::open(filename).map_err(|e| Error::Io(display_name(), e))?;
+    let input = read_to_string(file).map_err(|e| Error::Io(display_name(), e))?;
+    api_parser::statement_list(&input).map_err(|e| Error::Parser(display_name(), e))
 }
 
 impl Field {
@@ -551,6 +937,7 @@ pub struct EnumVariant {
 pub enum TypeDetails {
     TypedefBlock {
         fields: Vec<Field>,
+        comment: Option<String>,
     },
     Typedef {
         r#type: String,
@@ -573,7 +960,7 @@ impl TypeDetails {
     /// Returns optional description of the count
     fn vla(&self, parser: &ApiParser) -> Option<CountDescriptor> {
         let fields = match self {
-            Self::TypedefBlock { fields } => fields,
+            Self::TypedefBlock { fields, .. } => fields,
             Self::Typedef { r#type, size }
                 if matches!(size, Some(FieldSize::Variable(None))) && r#type == "string" =>
             {
@@ -601,15 +988,7 @@ impl TypeEntry {
     }
 
     pub fn import_module(&self) -> Option<String> {
-        Some(
-            self.import_filename
-                .as_ref()?
-                .rsplit('/')
-                .next()?
-                .rsplit('.')
-                .next_back()?
-                .to_string(),
-        )
+        Some(module_name(Path::new(self.import_filename.as_ref()?)))
     }
 }
 
@@ -632,12 +1011,12 @@ impl Message {
         crc: u32,
         comment: Option<String>,
     ) -> Self {
-        let implicit_fields = [Field {
-            r#type: "u16".to_string(),
-            name: "_vl_msg_id".to_string(),
-            options: vec![],
-            size: None,
-        }];
+        let implicit_fields = [Field::new(
+            "u16".to_string(),
+            "_vl_msg_id".to_string(),
+            vec![],
+            None,
+        )];
         let fields = implicit_fields.into_iter().chain(fields).collect();
 
         Self {
@@ -651,38 +1030,12 @@ impl Message {
     }
 
     fn generated_reply(&self) -> Option<Self> {
-        let auto_reply = self.auto_reply();
-        let index_reply = self.index_reply();
-
-        if auto_reply || index_reply {
-            let mut auto_fields = vec![
-                Field {
-                    r#type: "u16".to_string(),
-                    name: "_vl_msg_id".to_string(),
-                    options: vec![],
-                    size: None,
-                },
-                Field {
-                    r#type: "u32".to_string(),
-                    name: "context".to_string(),
-                    options: vec![],
-                    size: None,
-                },
-                Field {
-                    r#type: "i32".to_string(),
-                    name: "retval".to_string(),
-                    options: vec![],
-                    size: None,
-                },
+        if self.auto_reply() {
+            let auto_fields = vec![
+                Field::new("u16".to_string(), "_vl_msg_id".to_string(), vec![], None),
+                Field::new("u32".to_string(), "context".to_string(), vec![], None),
+                Field::new("i32".to_string(), "retval".to_string(), vec![], None),
             ];
-            if !auto_reply {
-                auto_fields.push(Field {
-                    r#type: "u32".to_string(),
-                    name: "index".to_string(),
-                    options: vec![],
-                    size: None,
-                });
-            }
 
             let mut crc_hash = crc32fast::Hasher::new();
             // crc doesn't include _vl_msg_id field
@@ -705,10 +1058,6 @@ impl Message {
         self.flags.contains(&Flag::AutoReply)
     }
 
-    fn index_reply(&self) -> bool {
-        self.flags.contains(&Flag::IndexReply)
-    }
-
     pub fn auto_endian(&self) -> bool {
         self.flags.contains(&Flag::AutoEndian)
     }
@@ -729,10 +1078,15 @@ impl Message {
         &self.fields
     }
 
-    pub fn has_retval(&self) -> bool {
+    /// Returns true if the message has a non-array field with the given name and type
+    pub fn has_scalar_field(&self, name: &str, r#type: &str) -> bool {
         self.fields
             .iter()
-            .any(|field| field.name == "retval" && field.r#type == "i32" && field.size.is_none())
+            .any(|field| field.name == name && field.r#type == r#type && field.size.is_none())
+    }
+
+    pub fn has_retval(&self) -> bool {
+        self.has_scalar_field("retval", "i32")
     }
 
     pub fn comment(&self) -> Option<&str> {
@@ -791,6 +1145,7 @@ pub struct Type {
     fields: Vec<Field>,
     _options: Vec<OptionStatement>,
     flags: Vec<Flag>,
+    comment: Option<String>,
 }
 
 impl Type {
@@ -800,6 +1155,10 @@ impl Type {
 
     pub fn fields(&self) -> &[Field] {
         &self.fields
+    }
+
+    pub fn comment(&self) -> Option<&str> {
+        self.comment.as_deref()
     }
 
     #[cfg(test)]
@@ -865,20 +1224,40 @@ pub struct ApiParser {
     messages: Vec<Message>,
     services: Vec<Service>,
     imports: Vec<String>,
+    /// Paths searched, in order, to find imported files
+    include_dirs: Vec<PathBuf>,
+    /// Resolved paths of all files imported, directly or indirectly
+    imported_files: Vec<PathBuf>,
+    /// Filenames, as given in import statements, of all files imported, directly or indirectly
+    imported_filenames: HashSet<String>,
     aliases: Vec<Alias>,
     unions: Vec<Union>,
     types: Vec<Type>,
     enums: Vec<Enum>,
     enumflags: Vec<Enum>,
+    counters: Vec<CheckedCounters>,
+    /// Paths for each paths statement
+    paths: Vec<Vec<CounterPath>>,
 
+    module: String,
     file_crc: u32,
 }
 
 impl ApiParser {
-    pub fn new(filename: &str) -> Result<Self, Error> {
-        let statements = parse_file(filename)?;
+    /// Parse the given API file
+    ///
+    /// Imports are searched for in each of `include_dirs` in order, with the first match being
+    /// used. If `include_dirs` is empty, imports are resolved relative to the current directory.
+    pub fn new(filename: &str, include_dirs: &[PathBuf]) -> Result<Self, Error> {
+        let path = Path::new(filename);
+        let module = module_name(path);
+        let statements = parse_file(path)?;
 
-        let mut me = Self::default();
+        let mut me = Self {
+            include_dirs: include_dirs.to_vec(),
+            module,
+            ..Default::default()
+        };
 
         me.do_imports(&statements)?;
         // Side effect: register types
@@ -894,14 +1273,36 @@ impl ApiParser {
             let Statement::Import(import_filename) = stmt else {
                 continue;
             };
+            // As per vppapigen, a file imported more than once, whether directly or indirectly,
+            // is only processed the first time, so that its types aren't redefined
+            if !self.imported_filenames.insert(import_filename.clone()) {
+                continue;
+            }
 
-            let imported_statements = parse_file(import_filename)?;
+            let import_path = self.resolve_import(import_filename)?;
+            let imported_statements = parse_file(&import_path)?;
+            self.imported_files.push(import_path);
             self.do_imports(&imported_statements)?;
 
             self.process_statements(imported_statements, Some(import_filename))?;
         }
 
         Ok(())
+    }
+
+    fn resolve_import(&self, import_filename: &str) -> Result<PathBuf, Error> {
+        if self.include_dirs.is_empty() {
+            return Ok(PathBuf::from(import_filename));
+        }
+
+        self.include_dirs
+            .iter()
+            .map(|include_dir| include_dir.join(import_filename))
+            .find(|path| path.is_file())
+            .ok_or_else(|| Error::ImportNotFound {
+                import: import_filename.to_string(),
+                include_dirs: self.include_dirs.clone(),
+            })
     }
 
     fn crc_for_fields(&self, fields: &[Field], debug: bool) -> Result<crc32fast::Hasher, Error> {
@@ -913,16 +1314,8 @@ impl ApiParser {
         crc_hash.update(crc_data.as_bytes());
 
         for field in fields {
-            if let Some(type_name) = field.r#type.strip_prefix(VL_API_PREFIX)
-                && let Some(type_name) = type_name.strip_suffix(VL_API_SUFFIX)
-            {
-                if let Some(type_entry) = self.global_types_by_name.get(type_name) {
-                    crc_hash.combine(&type_entry.crc);
-                } else {
-                    return Err(Error::TypeResolution {
-                        type_name: type_name.to_string(),
-                    });
-                }
+            if let Some((_, type_entry)) = self.lookup_field_type(&field.r#type)? {
+                crc_hash.combine(&type_entry.crc);
             }
         }
 
@@ -958,6 +1351,110 @@ impl ApiParser {
         Ok(vla)
     }
 
+    /// Validate and resolve fields that are tagged unions, i.e. that have a discriminator option
+    ///
+    /// On success, [`Field::tagged_union`] is populated for each such field.
+    fn resolve_tagged_unions(&self, name: &str, fields: &mut [Field]) -> Result<(), Error> {
+        for i in 0..fields.len() {
+            let tagged_union = self.resolve_tagged_union(name, fields, &fields[i])?;
+            fields[i].tagged_union = tagged_union.map(Arc::new);
+        }
+        Ok(())
+    }
+
+    /// Validate and resolve a single field if it is a tagged union
+    ///
+    /// Returns `None` if the field has no discriminator option.
+    fn resolve_tagged_union(
+        &self,
+        name: &str,
+        fields: &[Field],
+        field: &Field,
+    ) -> Result<Option<TaggedUnion>, Error> {
+        let Some(discriminator) = field.option_value("discriminator") else {
+            return Ok(None);
+        };
+
+        let Some(discriminator_field) = fields.iter().find(|f| f.name == discriminator) else {
+            return Err(Error::DiscriminatorNotFound {
+                name: name.to_string(),
+                field: field.name.clone(),
+                discriminator: discriminator.to_string(),
+            });
+        };
+
+        let (union_name, union_fields) = match self
+            .lookup_field_type(&field.r#type)?
+            .map(|(name, t)| (name, &t.details))
+        {
+            Some((union_name, TypeDetails::Union { fields, .. })) if field.size.is_none() => {
+                (union_name, fields)
+            }
+            _ => {
+                return Err(Error::DiscriminatedFieldNotUnion {
+                    field: field.name.clone(),
+                    type_name: field.r#type.clone(),
+                });
+            }
+        };
+
+        let (enum_name, enum_entry, variants) = match self
+            .lookup_field_type(&discriminator_field.r#type)?
+            .map(|(name, t)| (name, t, &t.details))
+        {
+            Some((
+                enum_name,
+                enum_entry,
+                TypeDetails::Enum { variants, .. } | TypeDetails::EnumFlag { variants, .. },
+            )) if discriminator_field.size.is_none() => (enum_name, enum_entry, variants),
+            _ => {
+                return Err(Error::DiscriminatorNotEnum {
+                    field: field.name.clone(),
+                    discriminator: discriminator.to_string(),
+                    type_name: discriminator_field.r#type.clone(),
+                });
+            }
+        };
+
+        let mut arms = Vec::with_capacity(union_fields.len());
+        let mut seen_cases = HashSet::new();
+        for arm in union_fields {
+            let Some(case) = arm.option_value("case") else {
+                return Err(Error::TaggedUnionMissingCase {
+                    union: union_name.to_string(),
+                    arm: arm.name.clone(),
+                });
+            };
+            // Enum variants are checked for unique values when the enum is defined, so distinct
+            // cases can't select the same value
+            if !variants.iter().any(|v| v.id == case) {
+                return Err(Error::TaggedUnionCaseNotInEnum {
+                    union: union_name.to_string(),
+                    arm: arm.name.clone(),
+                    case: case.to_string(),
+                    enum_name: enum_name.to_string(),
+                });
+            }
+            if !seen_cases.insert(case) {
+                return Err(Error::TaggedUnionDuplicateCase {
+                    union: union_name.to_string(),
+                    case: case.to_string(),
+                });
+            }
+            arms.push(TaggedUnionArm {
+                field: arm.clone(),
+                case: case.to_string(),
+            });
+        }
+
+        Ok(Some(TaggedUnion {
+            discriminator: discriminator.to_string(),
+            enum_name: enum_name.to_string(),
+            r#enum: enum_entry.clone(),
+            arms,
+        }))
+    }
+
     /// Process statements
     ///
     /// Returns file CRC.
@@ -969,18 +1466,19 @@ impl ApiParser {
         let mut file_crc = crc32fast::Hasher::new();
 
         for stmt in statements {
-            if let Some(crc_data) = stmt.crc_data() {
+            if let Some(crc_data) = stmt.crc_data()? {
                 file_crc.update(crc_data.as_bytes());
             }
             let (name, t) = match stmt {
                 Statement::Define {
                     name,
                     options,
-                    fields,
+                    mut fields,
                     flags,
                     comment,
                 } => {
                     self.validate_vla(&name, &fields, false)?;
+                    self.resolve_tagged_unions(&name, &mut fields)?;
                     if import.is_none() {
                         let crc = self.crc_for_fields(&fields, false)?;
                         let define =
@@ -996,17 +1494,20 @@ impl ApiParser {
                 Statement::TypedefBlock {
                     name,
                     options,
-                    fields,
+                    mut fields,
                     flags,
+                    comment,
                 } => {
                     self.validate_vla(&name, &fields, false)?;
                     let crc = self.crc_for_fields(&fields, false)?;
+                    self.resolve_tagged_unions(&name, &mut fields)?;
                     if import.is_none() {
                         let un = Type {
                             name: name.clone(),
                             _options: options,
                             fields: fields.clone(),
                             flags,
+                            comment: comment.clone(),
                         };
                         self.types.push(un);
                     }
@@ -1014,7 +1515,7 @@ impl ApiParser {
                         name,
                         TypeEntry {
                             crc,
-                            details: TypeDetails::TypedefBlock { fields },
+                            details: TypeDetails::TypedefBlock { fields, comment },
                             import_filename: import.map(|m| m.to_string()),
                         },
                     )
@@ -1080,9 +1581,11 @@ impl ApiParser {
                     size,
                     block_statements,
                 } => {
+                    check_enum_backwards_compatible_last(&name, &block_statements)?;
+                    let variants = enum_variants_from_block_statements(&name, &block_statements)?;
                     let mut crc = crc32fast::Hasher::new();
-                    crc.update(crc_data_for_enum_block_statements(&block_statements).as_bytes());
-                    let variants = enum_variants_from_block_statements(&block_statements);
+                    crc.update(crc_data_for_enum(&block_statements, &variants).as_bytes());
+                    check_enum_unique_values(&name, &variants)?;
                     if import.is_none() {
                         self.enums.push(Enum {
                             name: name.clone(),
@@ -1105,9 +1608,11 @@ impl ApiParser {
                     size,
                     block_statements,
                 } => {
+                    check_enum_backwards_compatible_last(&name, &block_statements)?;
+                    let variants = enum_variants_from_block_statements(&name, &block_statements)?;
                     let mut crc = crc32fast::Hasher::new();
-                    crc.update(crc_data_for_enum_block_statements(&block_statements).as_bytes());
-                    let variants = enum_variants_from_block_statements(&block_statements);
+                    crc.update(crc_data_for_enum(&block_statements, &variants).as_bytes());
+                    check_enum_unique_values(&name, &variants)?;
                     if import.is_none() {
                         self.enumflags.push(Enum {
                             name: name.clone(),
@@ -1140,6 +1645,26 @@ impl ApiParser {
                 Statement::Service(services) => {
                     if import.is_none() {
                         self.services.extend(services);
+                    }
+                    continue;
+                }
+                // As per vppapigen, counters and paths in imported files are ignored
+                Statement::Counters(counters) => {
+                    if import.is_none() {
+                        self.counters.push(CheckedCounters {
+                            name: counters.id,
+                            elements: counters
+                                .elements
+                                .into_iter()
+                                .map(CheckedCounterElement::try_from)
+                                .collect::<Result<Vec<_>, Error>>()?,
+                        });
+                    }
+                    continue;
+                }
+                Statement::Paths(paths) => {
+                    if import.is_none() {
+                        self.paths.push(paths);
                     }
                     continue;
                 }
@@ -1303,6 +1828,11 @@ impl ApiParser {
         &self.imports
     }
 
+    /// Resolved paths of all files imported, directly or indirectly
+    pub fn imported_files(&self) -> &[PathBuf] {
+        &self.imported_files
+    }
+
     pub fn unions(&self) -> &[Union] {
         &self.unions
     }
@@ -1343,18 +1873,65 @@ impl ApiParser {
                 type_name: r#type.to_string(),
             })
     }
+
+    /// Look up the type of a field
+    ///
+    /// Returns `None` if the type isn't of the form `vl_api_<name>_t` (e.g. a base type), or
+    /// otherwise the bare type name and its entry, erroring if it can't be resolved.
+    pub fn lookup_field_type<'a>(
+        &self,
+        r#type: &'a str,
+    ) -> Result<Option<(&'a str, &Arc<TypeEntry>)>, Error> {
+        let Some(type_name) = r#type
+            .strip_prefix(VL_API_PREFIX)
+            .and_then(|t| t.strip_suffix(VL_API_SUFFIX))
+        else {
+            return Ok(None);
+        };
+        Ok(Some((type_name, self.lookup_global_type(type_name)?)))
+    }
+
+    pub fn counters(&self) -> &[CheckedCounters] {
+        &self.counters
+    }
+
+    /// Paths for each paths statement
+    pub fn paths(&self) -> &[Vec<CounterPath>] {
+        &self.paths
+    }
+
+    /// Module name
+    pub fn module(&self) -> &str {
+        &self.module
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::{ApiParser, Error, FieldSize, OptionStatement};
+    use crate::parser::{
+        ApiParser, CounterPath, Error, FieldSize, Message, OptionStatement, OptionValue, Statement,
+        TypeDetails, api_parser, module_name,
+    };
     use pretty_assertions::assert_eq;
+    use std::path::Path;
+
+    #[test]
+    fn module_names() {
+        assert_eq!(module_name(Path::new("foo.api")), "foo");
+        assert_eq!(module_name(Path::new("vnet/ip/ip_types.api")), "ip_types");
+        assert_eq!(module_name(Path::new("/abs/foo.bar.api")), "foo_bar");
+        assert_eq!(module_name(Path::new("foo")), "foo");
+        assert_eq!(module_name(Path::new(".api")), "_api");
+    }
 
     #[test]
     fn sanity() {
-        let api = ApiParser::new(&format!("{}/tests/sanity.api", env!("CARGO_MANIFEST_DIR")))
-            .inspect_err(|e| println!("{}", e))
-            .expect("failed");
+        let api = ApiParser::new(
+            &format!("{}/tests/sanity.api", env!("CARGO_MANIFEST_DIR")),
+            &[],
+        )
+        .inspect_err(|e| println!("{}", e))
+        .expect("failed");
 
         let options: Vec<_> = api
             .options()
@@ -1363,7 +1940,10 @@ mod tests {
             .collect();
         assert_eq!(
             options,
-            [("version".to_string(), Some("1.0.0".to_string()))]
+            [(
+                "version".to_string(),
+                Some(OptionValue::String("1.0.0".to_string()))
+            )]
         );
         let expected_imports: &[String] = &[];
         assert_eq!(api.imports(), expected_imports);
@@ -1573,10 +2153,21 @@ mod tests {
             (
                 "vl_api_ip4_address_t",
                 "ip4",
-                &[] as &[OptionStatement],
+                &[OptionStatement {
+                    option: "case".to_string(),
+                    value: Some(OptionValue::String("ADDRESS_IP4".to_string())),
+                }] as &[OptionStatement],
                 &None,
             ),
-            ("vl_api_ip6_address_t", "ip6", &[], &None),
+            (
+                "vl_api_ip6_address_t",
+                "ip6",
+                &[OptionStatement {
+                    option: "case".to_string(),
+                    value: Some(OptionValue::String("ADDRESS_IP6".to_string())),
+                }],
+                &None,
+            ),
         ];
         let fields: Vec<_> = un
             .fields()
@@ -1600,6 +2191,7 @@ mod tests {
             .find(|un| un.name() == "address")
             .expect("missing address type");
         assert_eq!(t.options(), []);
+        assert_eq!(t.comment(), Some("/* Test address comment 2 */"));
         let expected_fields = [
             (
                 "vl_api_address_family_t",
@@ -1607,7 +2199,15 @@ mod tests {
                 &[] as &[OptionStatement],
                 &None,
             ),
-            ("vl_api_address_union_t", "un", &[], &None),
+            (
+                "vl_api_address_union_t",
+                "un",
+                &[OptionStatement {
+                    option: "discriminator".to_string(),
+                    value: Some(OptionValue::String("af".to_string())),
+                }],
+                &None,
+            ),
         ];
         let fields: Vec<_> = t
             .fields()
@@ -1695,7 +2295,7 @@ mod tests {
                 "keepalive",
                 &[OptionStatement {
                     option: "default".to_string(),
-                    value: Some("true".to_string()),
+                    value: Some(OptionValue::Bool(true)),
                 }],
                 &None,
             ),
@@ -1757,6 +2357,8 @@ mod tests {
                 ("flags_reply", 0xe8d4e804),
                 ("str_request", 0xd170b6e7),
                 ("str_request_reply", 0xe8d4e804),
+                ("set_tunnel_encap_decap_flags", 0xbbc4c786),
+                ("set_tunnel_encap_decap_flags_reply", 0xe8d4e804),
             ]
         );
 
@@ -1798,15 +2400,21 @@ mod tests {
                 ("ip_table_dump", "ip_table_details", true, None),
                 ("flags", "flags_reply", false, None),
                 ("str_request", "str_request_reply", false, None),
+                (
+                    "set_tunnel_encap_decap_flags",
+                    "set_tunnel_encap_decap_flags_reply",
+                    false,
+                    None,
+                ),
             ]
         );
 
-        assert_eq!(api.file_crc(), 0xeabe8f26);
+        assert_eq!(api.file_crc(), 0xe6f76373);
     }
 
     /// Parse a file and expect an error, returning that error
     fn parse_file_expect_error(filename: &str) -> Error {
-        match ApiParser::new(&format!("{}/{}", env!("CARGO_MANIFEST_DIR"), filename)) {
+        match ApiParser::new(&format!("{}/{}", env!("CARGO_MANIFEST_DIR"), filename), &[]) {
             Ok(_) => panic!("unexpectedly parsed {} successfully", filename),
             Err(e) => e,
         }
@@ -1961,6 +2569,581 @@ mod tests {
         assert_eq!(
             parse_file_expect_error("tests/string_not_array.api").to_string(),
             "String field \"s\" must be declared as an array"
+        );
+    }
+
+    #[test]
+    fn tagged_union_enumflag() {
+        let api = ApiParser::new(
+            &format!(
+                "{}/tests/tagged_union_enumflag.api",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+            &[],
+        )
+        .inspect_err(|e| println!("{}", e))
+        .expect("failed");
+
+        let t = api
+            .types()
+            .iter()
+            .find(|t| t.name() == "flags_tagged")
+            .expect("missing flags_tagged type");
+        assert!(t.fields()[1].tagged_union().is_none());
+        let tagged_union = t.fields()[0]
+            .tagged_union()
+            .expect("un should be a tagged union");
+        assert_eq!(tagged_union.discriminator, "flags");
+        assert_eq!(tagged_union.enum_name, "tu_flags");
+        assert!(matches!(
+            tagged_union.r#enum.details,
+            TypeDetails::EnumFlag { .. }
+        ));
+        let arms: Vec<_> = tagged_union
+            .arms
+            .iter()
+            .map(|arm| {
+                (
+                    arm.field.name.as_str(),
+                    arm.field.r#type.as_str(),
+                    arm.case.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            arms,
+            [
+                ("a", "u32", "TU_FLAGS_A"),
+                ("b", "u16", "TU_FLAGS_B"),
+                ("c", "vl_api_ip4_address_t", "TU_FLAGS_C"),
+            ]
+        );
+    }
+
+    #[test]
+    fn tagged_union_discriminator_not_found() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_discriminator_not_found.api").to_string(),
+            "Discriminator \"family\" for field \"un\" in \"address\" not found"
+        );
+    }
+
+    #[test]
+    fn tagged_union_not_union() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_not_union.api").to_string(),
+            "Field \"un\" has a discriminator but its type \"vl_api_ip4_address_t\" is not a union"
+        );
+    }
+
+    #[test]
+    fn tagged_union_discriminator_not_enum() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_discriminator_not_enum.api").to_string(),
+            "Discriminator \"af\" for field \"un\" has type \"u8\" which is not an enum or enumflag"
+        );
+    }
+
+    #[test]
+    fn tagged_union_missing_case() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_missing_case.api").to_string(),
+            "Field \"ip6\" in tagged union \"address_union\" is missing a case option"
+        );
+    }
+
+    #[test]
+    fn tagged_union_case_not_in_enum() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_case_not_in_enum.api").to_string(),
+            "Case \"FLAG_B\" for field \"ip6\" in tagged union \"address_union\" is not a variant of enum \"address_family\""
+        );
+    }
+
+    #[test]
+    fn tagged_union_duplicate_case() {
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_duplicate_case.api").to_string(),
+            "Case \"FLAG_A\" is used more than once in tagged union \"address_union\""
+        );
+    }
+
+    #[test]
+    fn tagged_union_duplicate_case_value() {
+        // Ambiguous arms are prevented by the discriminator enum's own duplicate value check
+        assert_eq!(
+            parse_file_expect_error("tests/tagged_union_duplicate_case_value.api").to_string(),
+            "Variant \"ADDRESS_INET6\" in enum \"address_family\" has the same value (1) as variant \"ADDRESS_IP6\""
+        );
+    }
+
+    #[test]
+    fn enum_duplicate_implicit_value() {
+        assert_eq!(
+            parse_file_expect_error("tests/enum_duplicate_implicit_value.api").to_string(),
+            "Variant \"IP_API_PROTO_GGP\" in enum \"ip_proto\" has the same value (2) as variant \"IP_API_PROTO_IGMP\""
+        );
+    }
+
+    #[test]
+    fn enum_max_value() {
+        let api = ApiParser::new(
+            &format!("{}/tests/enum_max_value.api", env!("CARGO_MANIFEST_DIR")),
+            &[],
+        )
+        .expect("failed to parse");
+        let variants: Vec<Vec<_>> = api
+            .enums()
+            .iter()
+            .map(|e| {
+                e.variants
+                    .iter()
+                    .map(|v| (v.id.as_str(), v.value))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            variants,
+            [
+                vec![
+                    ("NAT_API_PROTOCOL_UDP", 6),
+                    ("NAT_API_PROTOCOL_TCP", 0x17),
+                    ("NAT_API_PROTOCOL_ANY", 0xffffffff),
+                ],
+                vec![
+                    ("NAT_API_PROTOCOL_WRAPPED_ANY", 0xffffffff),
+                    ("NAT_API_PROTOCOL_WRAPPED_UDP", 6),
+                    ("NAT_API_PROTOCOL_WRAPPED_TCP", 7),
+                ],
+            ]
+        );
+        // As generated by vppapigen
+        assert_eq!(api.file_crc(), 0xc76924e9);
+    }
+
+    #[test]
+    fn enum_implicit_value_overflow() {
+        assert_eq!(
+            parse_file_expect_error("tests/enum_implicit_value_overflow.api").to_string(),
+            "Variant \"NAT_API_PROTOCOL_OTHER\" in enum \"nat_protocol\" has no explicit value, but the previous variant has the maximum value"
+        );
+    }
+
+    #[test]
+    fn enumflag_duplicate_value() {
+        assert_eq!(
+            parse_file_expect_error("tests/enumflag_duplicate_value.api").to_string(),
+            "Variant \"IF_STATUS_API_FLAG_LINK_ALIAS\" in enum \"if_status_flags\" has the same value (2) as variant \"IF_STATUS_API_FLAG_LINK_UP\""
+        );
+    }
+
+    #[test]
+    fn backwards_compatible_enum_variant_not_last() {
+        assert_eq!(
+            parse_file_expect_error("tests/backwards_compatible_enum_variant_not_last.api")
+                .to_string(),
+            "Variant \"TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_COPY_DF\" in enum \"tunnel_encap_decap_flags\" follows a backwards_compatible variant, but backwards_compatible variants must be last"
+        );
+    }
+
+    /// Name, options and size of a field
+    type FieldSummary = (String, Vec<OptionStatement>, Option<FieldSize>);
+
+    /// Parse a typedef block from a string, returning a summary of each field
+    fn parse_typedef_fields(input: &str) -> Result<Vec<FieldSummary>, String> {
+        let statements = api_parser::statement_list(input).map_err(|e| e.to_string())?;
+        let [Statement::TypedefBlock { fields, .. }] = statements.as_slice() else {
+            panic!("expected a single typedef block, got {statements:?}");
+        };
+        Ok(fields
+            .iter()
+            .map(|f| (f.name.clone(), f.options.clone(), f.size.clone()))
+            .collect())
+    }
+
+    #[test]
+    fn field_options_syntax() {
+        let option = |option: &str, value: Option<OptionValue>| OptionStatement {
+            option: option.to_string(),
+            value,
+        };
+        let string = |s: &str| OptionValue::String(s.to_string());
+
+        let fields = parse_typedef_fields(
+            "typedef t {
+                u32 n;
+                u8 a[n];
+                u8 b[default=true, bar];
+                u8 c[x=false y];
+                u8 d[x y];
+            };",
+        )
+        .expect("failed to parse");
+        assert_eq!(
+            fields,
+            [
+                ("n".to_string(), vec![], None),
+                // A single identifier is a VLA length field, not an option
+                (
+                    "a".to_string(),
+                    vec![],
+                    Some(FieldSize::Variable(Some("n".to_string())))
+                ),
+                (
+                    "b".to_string(),
+                    vec![
+                        option("default", Some(OptionValue::Bool(true))),
+                        option("bar", None)
+                    ],
+                    None
+                ),
+                (
+                    "c".to_string(),
+                    vec![
+                        option("x", Some(OptionValue::Bool(false))),
+                        option("y", None)
+                    ],
+                    None
+                ),
+                (
+                    "d".to_string(),
+                    vec![option("x", None), option("y", None)],
+                    None
+                ),
+            ]
+        );
+
+        // As per vppapigen, a comma is only allowed after an option with a value
+        parse_typedef_fields("typedef t { u8 a[x, y]; };")
+            .expect_err("unexpectedly parsed comma after option without value");
+
+        // A keyword value must not be split from following identifier characters
+        let fields = parse_typedef_fields(
+            "typedef t {
+                u8 a[x=true_value];
+                u8 b[x=falsey y];
+            };",
+        )
+        .expect("failed to parse");
+        assert_eq!(
+            fields,
+            [
+                (
+                    "a".to_string(),
+                    vec![option("x", Some(string("true_value")))],
+                    None
+                ),
+                (
+                    "b".to_string(),
+                    vec![option("x", Some(string("falsey"))), option("y", None)],
+                    None
+                ),
+            ]
+        );
+
+        // As per vppapigen, numeric values may be hexadecimal, or decimal integers or floats
+        let fields = parse_typedef_fields(
+            "typedef t {
+                u32 a[default=0xffffffff];
+                u32 b[default=0X1F];
+                i32 c[default=-1500, x];
+                f64 d[default=1.0 y];
+                f64 e[default=-2.];
+                string f[default=\"text\"];
+            };",
+        )
+        .expect("failed to parse");
+        assert_eq!(
+            fields,
+            [
+                (
+                    "a".to_string(),
+                    vec![option("default", Some(OptionValue::Integer(0xffffffff)))],
+                    None
+                ),
+                (
+                    "b".to_string(),
+                    vec![option("default", Some(OptionValue::Integer(0x1f)))],
+                    None
+                ),
+                (
+                    "c".to_string(),
+                    vec![
+                        option("default", Some(OptionValue::Integer(-1500))),
+                        option("x", None)
+                    ],
+                    None
+                ),
+                (
+                    "d".to_string(),
+                    vec![
+                        option("default", Some(OptionValue::Float(1.0))),
+                        option("y", None)
+                    ],
+                    None
+                ),
+                (
+                    "e".to_string(),
+                    vec![option("default", Some(OptionValue::Float(-2.0)))],
+                    None
+                ),
+                (
+                    "f".to_string(),
+                    vec![option("default", Some(string("text")))],
+                    None
+                ),
+            ]
+        );
+
+        // A number value must not be split from following identifier characters
+        for input in [
+            "typedef t { u8 a[x=1abc]; };",
+            "typedef t { u8 a[x=0x]; };",
+            "typedef t { u8 a[x=0xfg]; };",
+            "typedef t { u8 a[x=1.5e3]; };",
+        ] {
+            parse_typedef_fields(input).expect_err(input);
+        }
+    }
+
+    #[test]
+    fn option_values_json() {
+        let statements = api_parser::statement_list(
+            "option version = \"1.2.3\";
+            typedef t {
+                u32 a[default=0xffffffff];
+                f64 b[default=1.0];
+                i32 c[default=-1];
+                bool d[default=true];
+                bool e[default=false];
+                u32 f[x=identifier];
+            };",
+        )
+        .expect("failed to parse");
+        let [
+            Statement::Option(version),
+            Statement::TypedefBlock { fields, .. },
+        ] = statements.as_slice()
+        else {
+            panic!("unexpected statements: {statements:?}");
+        };
+        assert_eq!(
+            serde_json::to_string(&version.value()).unwrap(),
+            r#""1.2.3""#
+        );
+        // As per vppapigen, true is output as a string, but false as a boolean
+        let values: Vec<_> = fields
+            .iter()
+            .map(|f| serde_json::to_string(&f.options[0].value()).unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            [
+                "4294967295",
+                "1.0",
+                "-1",
+                r#""true""#,
+                "false",
+                r#""identifier""#
+            ]
+        );
+    }
+
+    #[test]
+    fn include_dirs() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let include_dir1 = manifest_dir.join("tests/include_dir1");
+        let include_dir2 = manifest_dir.join("tests/include_dir2");
+        let api = ApiParser::new(
+            &manifest_dir.join("tests/include_dir.api").to_string_lossy(),
+            &[include_dir1.clone(), include_dir2.clone()],
+        )
+        .inspect_err(|e| println!("{}", e))
+        .expect("failed");
+
+        assert_eq!(api.imports(), ["nested/include_dir_types.api"]);
+        // Nested imports are also searched for in the include directories, with earlier include
+        // directories taking precedence
+        assert_eq!(
+            api.imported_files(),
+            [
+                include_dir2.join("nested/include_dir_types.api"),
+                include_dir1.join("nested/include_dir_types2.api"),
+            ]
+        );
+        let TypeDetails::TypedefBlock { fields, .. } =
+            &api.lookup_global_type("include_dir_type2").unwrap().details
+        else {
+            panic!("include_dir_type2 is not a typedef block");
+        };
+        assert_eq!(fields[0].r#type, "u32");
+
+        // As per vppapigen, counters and paths in imported files are ignored
+        assert!(api.counters().is_empty());
+        assert_eq!(api.paths(), [] as [Vec<CounterPath>; 0]);
+    }
+
+    #[test]
+    fn comment_association() {
+        let statements = api_parser::statement_list(
+            "/* separated by a blank line */
+
+            define separated { u32 a; };
+            /* adjacent */
+            define adjacent { u32 a; };
+            /* same line */ define same_line { u32 a; };
+            /* adjacent with flags */
+            autoreply define adjacent_flags { u32 a; };
+            /* separated from keyword by flags on own line */
+            autoreply
+            define separated_flags { u32 a; };
+            // adjacent line comment
+            define adjacent_line_comment { u32 a; };
+            /* separated typedef */
+
+            typedef separated_typedef { u32 a; };
+            /* adjacent typedef */
+            typedef adjacent_typedef { u32 a; };
+            /* separated union */
+
+            union separated_union { u32 a; };
+            /* first */
+            /* last */
+            union adjacent_union { u32 a; };",
+        )
+        .expect("failed to parse");
+        let comments: Vec<_> = statements
+            .iter()
+            .map(|s| match s {
+                Statement::Define { name, comment, .. }
+                | Statement::TypedefBlock { name, comment, .. }
+                | Statement::Union { name, comment, .. } => (name.as_str(), comment.as_deref()),
+                _ => panic!("unexpected statement {s:?}"),
+            })
+            .collect();
+        assert_eq!(
+            comments,
+            [
+                ("separated", None),
+                ("adjacent", Some("/* adjacent */")),
+                ("same_line", Some("/* same line */")),
+                ("adjacent_flags", Some("/* adjacent with flags */")),
+                ("separated_flags", None),
+                ("adjacent_line_comment", Some("/* adjacent line comment */")),
+                ("separated_typedef", None),
+                ("adjacent_typedef", Some("/* adjacent typedef */")),
+                ("separated_union", None),
+                ("adjacent_union", Some("/* last */")),
+            ]
+        );
+    }
+
+    #[test]
+    fn shared_import() {
+        let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let api = ApiParser::new(
+            &tests_dir.join("shared_import.api").to_string_lossy(),
+            std::slice::from_ref(&tests_dir),
+        )
+        .inspect_err(|e| println!("{}", e))
+        .expect("failed");
+
+        assert_eq!(
+            api.imports(),
+            [
+                "shared_import/a.api",
+                "shared_import/b.api",
+                "shared_import/types.api",
+                "shared_import/types.api"
+            ]
+        );
+        // Each file is only processed once, however many times it is imported
+        assert_eq!(
+            api.imported_files(),
+            [
+                tests_dir.join("shared_import/a.api"),
+                tests_dir.join("shared_import/types.api"),
+                tests_dir.join("shared_import/b.api"),
+            ]
+        );
+        let types: Vec<_> = api.global_types().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            types,
+            [
+                "shared_import_enum",
+                "shared_import_type",
+                "shared_import_alias",
+                "shared_import_a",
+                "shared_import_b",
+            ]
+        );
+        let messages: Vec<_> = api.messages().iter().map(Message::name).collect();
+        assert_eq!(
+            messages,
+            ["shared_import_message", "shared_import_message_reply"]
+        );
+        // As generated by vppapigen
+        assert_eq!(api.file_crc(), 0x3afe1a21);
+    }
+
+    #[test]
+    fn paths() {
+        let path = |path: &str, counter: &str| CounterPath {
+            path: path.to_string(),
+            counter: counter.to_string(),
+        };
+
+        let statements = api_parser::statement_list(
+            r#"
+paths {
+  "/err/bfd-udp4-input" "bfd";
+  "/err/bfd-udp6-input" "bfd";
+};
+paths {
+  "/err/bfd-worker-input" "bfd_udp_tx";
+};
+typedef paths_field {
+  u32 paths;
+};
+"#,
+        )
+        .expect("parsing failed");
+        let [
+            Statement::Paths(paths1),
+            Statement::Paths(paths2),
+            Statement::TypedefBlock { fields, .. },
+        ] = statements.as_slice()
+        else {
+            panic!("unexpected statements {statements:?}");
+        };
+        assert_eq!(
+            paths1,
+            &[
+                path("/err/bfd-udp4-input", "bfd"),
+                path("/err/bfd-udp6-input", "bfd"),
+            ]
+        );
+        // A paths statement with a single path is still a list of paths
+        assert_eq!(paths2, &[path("/err/bfd-worker-input", "bfd_udp_tx")]);
+        // paths is still allowed as a field name
+        assert_eq!(fields[0].name, "paths");
+    }
+
+    #[test]
+    fn import_not_found() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let include_dir1 = manifest_dir.join("tests/include_dir1");
+        let err = ApiParser::new(
+            &manifest_dir.join("tests/include_dir.api").to_string_lossy(),
+            std::slice::from_ref(&include_dir1),
+        )
+        .expect_err("unexpectedly parsed successfully");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Unable to find import \"nested/include_dir_types.api\" in include directories [{:?}]",
+                include_dir1
+            )
         );
     }
 }

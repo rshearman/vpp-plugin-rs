@@ -1,0 +1,20 @@
+option version = "1.0.0";
+
+import "nested/include_dir_types2.api";
+
+typedef include_dir_type {
+    vl_api_include_dir_type2_t inner;
+};
+
+/* Counters and paths in imported files are ignored */
+counters include_dir {
+  imported {
+    severity info;
+    type counter64;
+    units "packets";
+    description "Imported counter";
+  };
+};
+paths {
+  "/err/include-dir" "include_dir";
+};

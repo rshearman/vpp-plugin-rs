@@ -1,4 +1,5 @@
 {
+    "module": "sanity",
     "types": [
         [
             "address",
@@ -8,15 +9,24 @@
             ],
             [
                 "vl_api_address_union_t",
-                "un"
-            ]
+                "un",
+                {
+                    "discriminator": "af"
+                }
+            ],
+            {
+                "comment": "/* Test address comment 2 */"
+            }
         ],
         [
             "module_version",
             [
                 "u8",
                 "dummy"
-            ]
+            ],
+            {
+                "comment": "/* Test comment 2 */"
+            }
         ]
     ],
     "messages": [
@@ -556,7 +566,8 @@
             ],
             {
                 "crc": "0x51077d14",
-                "options": {}
+                "options": {},
+                "comment": "/* Test comment 2 */"
             }
         ],
         [
@@ -663,6 +674,48 @@
                 "crc": "0xe8d4e804",
                 "options": {}
             }
+        ],
+        [
+            "set_tunnel_encap_decap_flags",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "client_index"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "vl_api_tunnel_encap_decap_flags_t",
+                "flags"
+            ],
+            {
+                "crc": "0xbbc4c786",
+                "options": {}
+            }
+        ],
+        [
+            "set_tunnel_encap_decap_flags_reply",
+            [
+                "u16",
+                "_vl_msg_id"
+            ],
+            [
+                "u32",
+                "context"
+            ],
+            [
+                "i32",
+                "retval"
+            ],
+            {
+                "crc": "0xe8d4e804",
+                "options": {}
+            }
         ]
     ],
     "unions": [
@@ -670,11 +723,17 @@
             "address_union",
             [
                 "vl_api_ip4_address_t",
-                "ip4"
+                "ip4",
+                {
+                    "case": "ADDRESS_IP4"
+                }
             ],
             [
                 "vl_api_ip6_address_t",
-                "ip6"
+                "ip6",
+                {
+                    "case": "ADDRESS_IP6"
+                }
             ]
         ]
     ],
@@ -688,6 +747,24 @@
             [
                 "ADDRESS_IP6",
                 1
+            ],
+            {
+                "enumtype": "u8"
+            }
+        ],
+        [
+            "tunnel_encap_decap_flags",
+            [
+                "TUNNEL_API_ENCAP_DECAP_FLAG_NONE",
+                0
+            ],
+            [
+                "TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_COPY_DF",
+                1
+            ],
+            [
+                "TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_INNER_HASH",
+                32
             ],
             {
                 "enumtype": "u8"
@@ -759,6 +836,9 @@
         },
         "str_request": {
             "reply": "str_request_reply"
+        },
+        "set_tunnel_encap_decap_flags": {
+            "reply": "set_tunnel_encap_decap_flags_reply"
         }
     },
     "options": {
@@ -774,8 +854,40 @@
             "length": 16
         }
     },
-    "vl_api_version": "0xeabe8f26",
+    "vl_api_version": "0xe6f76373",
     "imports": [],
-    "counters": [],
-    "paths": []
+    "counters": [
+        {
+            "name": "mss_clamp",
+            "elements": [
+                {
+                    "name": "clamped",
+                    "severity": "info",
+                    "type": "counter64",
+                    "units": "packets",
+                    "description": "packets clamped"
+                }
+            ]
+        }
+    ],
+    "paths": [
+        [
+            {
+                "path": "/err/tcp-mss-clamping-ip4-in",
+                "counter": "mss-clamp"
+            },
+            {
+                "path": "/err/tcp-mss-clamping-ip4-out",
+                "counter": "mss-clamp"
+            },
+            {
+                "path": "/err/tcp-mss-clamping-ip6-in",
+                "counter": "mss-clamp"
+            },
+            {
+                "path": "/err/tcp-mss-clamping-ip6-out",
+                "counter": "mss-clamp"
+            }
+        ]
+    ]
 }

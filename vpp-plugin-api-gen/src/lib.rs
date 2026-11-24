@@ -49,10 +49,11 @@
 )]
 
 use std::{
+    collections::HashSet,
     env,
     fs::{DirBuilder, File},
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use thiserror::Error;
@@ -60,13 +61,15 @@ use thiserror::Error;
 use crate::{
     json::generate_json,
     parser::{
-        Alias, ApiParser, CountDescriptor, Enum, Field, FieldSize, Message, Type, Union,
-        VL_API_PREFIX, VL_API_SUFFIX,
+        Alias, ApiParser, CountDescriptor, Enum, Field, FieldSize, Message, TaggedUnion, Type,
+        TypeDetails, Union, module_name,
     },
+    well_known::{WellKnownAlias, WellKnownType},
 };
 
 mod json;
 mod parser;
+mod well_known;
 
 /// Errors that can occur during API file parsing and code generation
 #[derive(Debug, Error)]
@@ -84,6 +87,18 @@ pub enum Error {
     /// Attempt to use functionality that isn't yet implemented
     #[error("{0}")]
     Unimplemented(String),
+    /// A message used in a service is missing a field required by the generated handler
+    #[error(
+        "Message \"{message}\" used in service for \"{service}\" is missing required field \"u32 {field}\""
+    )]
+    ServiceMessageMissingField {
+        /// Name of the service caller message
+        service: String,
+        /// Name of the message missing the field (either the caller or reply message)
+        message: String,
+        /// Name of the missing field
+        field: &'static str,
+    },
 }
 
 fn to_upper_camel_case(s: &str) -> String {
@@ -97,6 +112,42 @@ fn to_upper_camel_case(s: &str) -> String {
         .collect()
 }
 
+fn has_tagged_unions(fields: &[Field]) -> bool {
+    fields.iter().any(|field| field.tagged_union().is_some())
+}
+
+/// Name of the Rust constant for an enumflag variant
+///
+/// For ease of use, the enumflag name is stripped off the front of each flag, since this is
+/// redundant as the flags are already namespaced by the enumflag type.
+fn enumflag_const_name<'a>(enum_name: &str, variant_id: &'a str) -> &'a str {
+    variant_id
+        .strip_prefix(&format!("{}_", enum_name.to_uppercase()))
+        .unwrap_or(variant_id)
+}
+
+/// Rust path of the constant for a case of a tagged union, for use as a match pattern
+fn case_path(tagged_union: &TaggedUnion, case: &str) -> String {
+    // The constants are defined alongside the discriminator type, which may live in an imported
+    // module
+    let prefix = match tagged_union.r#enum.import_module() {
+        Some(import_module) => format!("super::{}_api::", import_module),
+        None => String::new(),
+    };
+    match tagged_union.r#enum.details {
+        // Enumflag constants are associated constants of the type rather than being defined at
+        // module scope. Note that if the path didn't resolve to a constant, the pattern would
+        // instead be a catch-all binding.
+        TypeDetails::EnumFlag { .. } => format!(
+            "{}{}::{}",
+            prefix,
+            to_upper_camel_case(&tagged_union.enum_name),
+            enumflag_const_name(&tagged_union.enum_name, case)
+        ),
+        _ => format!("{}{}", prefix, case),
+    }
+}
+
 trait ApiParserRustExt {
     fn to_rust_type(&self, r#type: &str) -> Result<String, Error>;
     fn to_rust_vla_elem_type(&self, r#type: &str) -> Result<String, Error>;
@@ -105,15 +156,17 @@ trait ApiParserRustExt {
 impl ApiParserRustExt for ApiParser {
     fn to_rust_type(&self, r#type: &str) -> Result<String, Error> {
         Ok(
-            if let Some(t) = r#type.strip_prefix(VL_API_PREFIX)
-                && let Some(t) = t.strip_suffix(VL_API_SUFFIX)
-            {
-                let global_type = self.lookup_global_type(t)?;
+            if let Some((t, global_type)) = self.lookup_field_type(r#type)? {
                 if let Some(import_module) = global_type.import_module() {
                     format!("super::{}_api::{}", import_module, to_upper_camel_case(t))
                 } else {
                     to_upper_camel_case(t)
                 }
+            } else if r#type == "bool" {
+                // A Rust bool must only ever hold 0 or 1, but nothing stops the sender of a
+                // message from putting any other value in, so use u8 to avoid undefined
+                // behaviour when such a message is received
+                "u8".to_string()
             } else {
                 r#type.to_string()
             },
@@ -157,13 +210,34 @@ impl ApiParserRustExt for ApiParser {
 ///     include!(concat!(env!("OUT_DIR"), "/src/example_api.rs"));
 /// }
 /// ```
+///
+/// If the API file imports other API files that live elsewhere, for example those installed by
+/// VPP, then the directories to search for them can be specified using
+/// [`include_dir`](Builder::include_dir):
+///
+/// ```no_run
+/// use std::{env, path::PathBuf};
+///
+/// let output_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("src");
+/// vpp_plugin_api_gen::Builder::new("example.api", &output_dir.to_string_lossy())
+///     .expect("unable to generate API binding")
+///     .include_dir(".")
+///     .include_dir("/usr/include")
+///     .generate()
+///     .expect("unable to generate API binding");
+/// ```
 #[derive(Debug)]
 pub struct Builder {
-    parser: ApiParser,
+    input_file: String,
+    include_dirs: Vec<PathBuf>,
 
     module: String,
-    output_file: File,
-    output_json_file: File,
+    output_file: PathBuf,
+    output_json_file: PathBuf,
+}
+
+fn in_build_script() -> bool {
+    env::var("OUT_DIR").is_ok() && env::var("CARGO_MANIFEST_DIR").is_ok()
 }
 
 impl Builder {
@@ -172,37 +246,37 @@ impl Builder {
     /// Both a `<api-module>_api.rs` and a `<api-module>.api.json` file will be generated in
     /// the output directory.
     pub fn new(input_file: &str, output_dir: &str) -> Result<Self, Error> {
-        let in_build_script = env::var("OUT_DIR").is_ok() && env::var("CARGO_MANIFEST_DIR").is_ok();
-        if in_build_script {
-            println!("cargo:cargo-rerun-if-changed={}", input_file);
+        if in_build_script() {
+            println!("cargo:rerun-if-changed={}", input_file);
         }
 
-        // Get file name without path
-        let input_file_name = Path::new(input_file).iter().next_back().unwrap();
-        let module = Path::new(input_file_name)
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let module = module_name(Path::new(input_file));
 
         DirBuilder::new().recursive(true).create(output_dir)?;
         let output_file = Path::new(output_dir).join(format!("{}_api.rs", module));
         let output_json_file = Path::new(output_dir).join(format!("{}.api.json", module));
 
-        let parser = ApiParser::new(input_file)?;
-
-        if in_build_script {
-            for import in parser.imports() {
-                println!("cargo:cargo-rerun-if-changed={}", import);
-            }
-        }
-
         Ok(Self {
-            parser,
+            input_file: input_file.to_string(),
+            include_dirs: Vec::new(),
             module,
-            output_file: File::create(&output_file)?,
-            output_json_file: File::create(&output_json_file)?,
+            output_file,
+            output_json_file,
         })
+    }
+
+    /// Add a directory to search for imported API files
+    ///
+    /// Directories are searched in the order they were added, and the first one containing the
+    /// imported file is used. If no include directories are added, then imports are resolved
+    /// relative to the current directory.
+    ///
+    /// When run from a build script, only the imported files that were actually used are
+    /// reported to Cargo, so adding a file to an earlier include directory that would shadow
+    /// one of them won't trigger regeneration until the build script reruns for another reason.
+    pub fn include_dir(mut self, path: impl AsRef<Path>) -> Self {
+        self.include_dirs.push(path.as_ref().to_path_buf());
+        self
     }
 
     /// Generate Rust code for the API file
@@ -210,11 +284,20 @@ impl Builder {
     /// Both a `<api-module>_api.rs` and a `<api-module>.api.json` file will be generated in
     /// the output directory.
     pub fn generate(self) -> Result<(), Error> {
+        let parser = ApiParser::new(&self.input_file, &self.include_dirs)?;
+
+        if in_build_script() {
+            for import in parser.imported_files() {
+                println!("cargo:rerun-if-changed={}", import.display());
+            }
+        }
+
+        // Only create (and truncate) the output files once parsing has succeeded
         ApiGenContext {
-            parser: &self.parser,
+            parser: &parser,
             module: self.module,
-            output_file: self.output_file,
-            output_json_file: self.output_json_file,
+            output_file: File::create(&self.output_file)?,
+            output_json_file: File::create(&self.output_json_file)?,
         }
         .generate()
     }
@@ -238,6 +321,16 @@ struct ApiGenContext<'a> {
 }
 
 impl ApiGenContext<'_> {
+    /// Generate a doc attribute from an API file comment
+    fn generate_doc_comment(&mut self, comment: Option<&str>) -> Result<(), Error> {
+        if let Some(comment) = comment {
+            // Debug formatting produces a valid Rust string literal, escaping quotes,
+            // backslashes (e.g. in "\brief") and control characters
+            writeln!(self.output_file, "#[doc = {:?}]", comment)?;
+        }
+        Ok(())
+    }
+
     fn generate_field(&mut self, field: &Field) -> Result<(), Error> {
         if field.r#type == "string" {
             match &field.size {
@@ -333,26 +426,214 @@ impl ApiGenContext<'_> {
         }
         writeln!(
             self.output_file,
-            "        f.debug_struct(\"{}\")",
+            "        let mut builder = f.debug_struct(\"{}\");",
             upper_camel_name
         )?;
+        let mut omitted = false;
         for (i, field) in fields.iter().enumerate() {
-            if printed(i, field) {
+            if !printed(i, field) {
+                omitted = true;
+            } else if let Some(tagged_union) = field.tagged_union() {
+                // Only print the arm selected by the discriminator
                 writeln!(
                     self.output_file,
-                    "            .field(\"{}\", &tmp_{})",
+                    "        match tmp_{} {{",
+                    tagged_union.discriminator
+                )?;
+                for arm in &tagged_union.arms {
+                    writeln!(
+                        self.output_file,
+                        "            // SAFETY: the arm is selected by the discriminator, and any initialised bit pattern is valid for it"
+                    )?;
+                    writeln!(
+                        self.output_file,
+                        "            {} => builder.field(\"{}\", &unsafe {{ tmp_{}.{} }}),",
+                        case_path(tagged_union, &arm.case),
+                        field.name,
+                        field.name,
+                        arm.field.name
+                    )?;
+                }
+                writeln!(
+                    self.output_file,
+                    "            #[allow(unreachable_patterns)]"
+                )?;
+                writeln!(
+                    self.output_file,
+                    "            _ => builder.field(\"{}\", &format_args!(\"<unknown>\")),",
+                    field.name
+                )?;
+                writeln!(self.output_file, "        }};")?;
+            } else {
+                writeln!(
+                    self.output_file,
+                    "        builder.field(\"{}\", &tmp_{});",
                     field.name, field.name
                 )?;
             }
         }
-        if fields
-            .iter()
-            .enumerate()
-            .all(|(i, field)| printed(i, field))
-        {
-            writeln!(self.output_file, "            .finish()")?;
+        if omitted {
+            writeln!(self.output_file, "        builder.finish_non_exhaustive()")?;
         } else {
-            writeln!(self.output_file, "            .finish_non_exhaustive()")?;
+            writeln!(self.output_file, "        builder.finish()")?;
+        }
+        writeln!(self.output_file, "    }}")?;
+        writeln!(self.output_file, "}}")?;
+        writeln!(self.output_file)?;
+
+        Ok(())
+    }
+
+    /// Generate a PartialEq implementation that, for tagged unions, compares only the arm
+    /// selected by the discriminator
+    fn generate_partial_eq_trait(&mut self, name: &str, fields: &[Field]) -> Result<(), Error> {
+        let upper_camel_name = to_upper_camel_case(name);
+
+        writeln!(
+            self.output_file,
+            "impl PartialEq for {} {{",
+            upper_camel_name
+        )?;
+        writeln!(
+            self.output_file,
+            "    fn eq(&self, other: &Self) -> bool {{"
+        )?;
+        // Compare non-union fields first so that the discriminators are known to be equal
+        // before the union arms are compared. Variable-length fields are zero-length so are
+        // skipped. Fields are copied out of the packed struct using blocks, since references
+        // can't be taken to them.
+        let fixed_fields = || {
+            fields
+                .iter()
+                .filter(|field| !matches!(field.size, Some(FieldSize::Variable(_))))
+        };
+        let mut first = true;
+        for field in fixed_fields().filter(|field| field.tagged_union().is_none()) {
+            writeln!(
+                self.output_file,
+                "        {}({{ self.{} }} == {{ other.{} }})",
+                if first { "" } else { "&& " },
+                field.name,
+                field.name
+            )?;
+            first = false;
+        }
+        for (field, tagged_union) in
+            fixed_fields().filter_map(|field| Some((field, field.tagged_union()?)))
+        {
+            writeln!(
+                self.output_file,
+                "        {}match self.{} {{",
+                if first { "" } else { "&& " },
+                tagged_union.discriminator
+            )?;
+            for arm in &tagged_union.arms {
+                writeln!(
+                    self.output_file,
+                    "            // SAFETY: the arm is selected by the discriminator, and any initialised bit pattern is valid for it"
+                )?;
+                writeln!(
+                    self.output_file,
+                    "            {} => {{ let (a, b) = unsafe {{ (self.{}.{}, other.{}.{}) }}; a == b }},",
+                    case_path(tagged_union, &arm.case),
+                    field.name,
+                    arm.field.name,
+                    field.name,
+                    arm.field.name
+                )?;
+            }
+            // There's no way of knowing which bytes of the union are meaningful, so treat as
+            // not equal
+            writeln!(
+                self.output_file,
+                "            #[allow(unreachable_patterns)]"
+            )?;
+            writeln!(self.output_file, "            _ => false,")?;
+            writeln!(self.output_file, "        }}")?;
+            first = false;
+        }
+        if first {
+            writeln!(self.output_file, "        true")?;
+        }
+        writeln!(self.output_file, "    }}")?;
+        writeln!(self.output_file, "}}")?;
+        writeln!(self.output_file)?;
+
+        Ok(())
+    }
+
+    /// Generate a Default implementation
+    ///
+    /// For messages, the message ID is filled in. Tagged unions are zero-initialised, so that
+    /// all bytes are initialised whichever arm is later read, and then the arm selected by the
+    /// default value of the discriminator (if any) is set to its default value.
+    fn generate_default_trait(
+        &mut self,
+        name: &str,
+        fields: &[Field],
+        is_message: bool,
+    ) -> Result<(), Error> {
+        let upper_camel_name = to_upper_camel_case(name);
+        let has_tagged_unions = has_tagged_unions(fields);
+
+        writeln!(self.output_file, "impl Default for {} {{", upper_camel_name)?;
+        writeln!(self.output_file, "    fn default() -> Self {{")?;
+        if has_tagged_unions {
+            writeln!(self.output_file, "        let mut value = Self {{")?;
+        } else {
+            writeln!(self.output_file, "        Self {{")?;
+        }
+        for field in fields {
+            if is_message && field.name == "_vl_msg_id" {
+                writeln!(self.output_file, "            _vl_msg_id: Self::msg_id(),")?;
+            } else if field.tagged_union().is_some() {
+                writeln!(
+                    self.output_file,
+                    "            // SAFETY: all-zero bytes are valid for a union"
+                )?;
+                writeln!(
+                    self.output_file,
+                    "            {}: unsafe {{ ::std::mem::zeroed() }},",
+                    field.name,
+                )?;
+            } else {
+                writeln!(
+                    self.output_file,
+                    "            {}: Default::default(),",
+                    field.name,
+                )?;
+            }
+        }
+        if has_tagged_unions {
+            writeln!(self.output_file, "        }};")?;
+            for field in fields {
+                let Some(tagged_union) = field.tagged_union() else {
+                    continue;
+                };
+                writeln!(
+                    self.output_file,
+                    "        match value.{} {{",
+                    tagged_union.discriminator
+                )?;
+                for arm in &tagged_union.arms {
+                    writeln!(
+                        self.output_file,
+                        "            {} => value.{}.{} = Default::default(),",
+                        case_path(tagged_union, &arm.case),
+                        field.name,
+                        arm.field.name
+                    )?;
+                }
+                writeln!(
+                    self.output_file,
+                    "            #[allow(unreachable_patterns)]"
+                )?;
+                writeln!(self.output_file, "            _ => {{}}")?;
+                writeln!(self.output_file, "        }}")?;
+            }
+            writeln!(self.output_file, "        value")?;
+        } else {
+            writeln!(self.output_file, "        }}")?;
         }
         writeln!(self.output_file, "    }}")?;
         writeln!(self.output_file, "}}")?;
@@ -365,14 +646,21 @@ impl ApiGenContext<'_> {
     ///
     /// Types containing a string can't be `Copy` or `Clone`, since `ApiString` isn't, because a
     /// copy would only contain the length of the string, not its contents.
-    fn generate_derives(&mut self, opt_derives: &str, contains_string: bool) -> Result<(), Error> {
-        let derives = if contains_string {
-            opt_derives.trim_end_matches(", ").to_string()
-        } else {
-            format!("{}Copy, Clone", opt_derives)
-        };
+    fn generate_derives(
+        &mut self,
+        opt_derives: &[(&str, bool)],
+        contains_string: bool,
+    ) -> Result<(), Error> {
+        let mut derives: Vec<&str> = opt_derives
+            .iter()
+            .filter(|(_, derive)| *derive)
+            .map(|(name, _)| *name)
+            .collect();
+        if !contains_string {
+            derives.extend(["Copy", "Clone"]);
+        }
         if !derives.is_empty() {
-            writeln!(self.output_file, "#[derive({})]", derives)?;
+            writeln!(self.output_file, "#[derive({})]", derives.join(", "))?;
         }
         Ok(())
     }
@@ -415,26 +703,27 @@ impl ApiGenContext<'_> {
     fn generate_message(&mut self, id: usize, message: &Message) -> Result<(), Error> {
         let upper_camel_name = to_upper_camel_case(message.name());
 
-        if let Some(comment) = message.comment() {
-            writeln!(
-                self.output_file,
-                "#[doc = \"{}\"]",
-                comment.replace("\"", "\\\"")
-            )?;
-        }
+        self.generate_doc_comment(message.comment())?;
         let contains_string = matches!(
             message.vla(self.parser),
             Some((_, CountDescriptor::String(_)))
         );
-        let opt_derives =
-            if message.manual_print() || message.vla_non_recursive().is_some() || contains_string {
-                ""
-            } else if message.vla(self.parser).is_some() {
-                "Debug, "
-            } else {
-                "Debug, PartialEq, "
-            };
-        self.generate_derives(opt_derives, contains_string)?;
+        let has_tagged_unions = has_tagged_unions(message.fields());
+        // Debug is implemented manually for messages with a VLA to avoid printing the
+        // zero-length field, for strings since they can't be copied, which the derived
+        // implementation requires for packed types, and for tagged unions to only print the
+        // selected arm
+        let debug = !message.manual_print();
+        let manual_debug = debug
+            && (message.vla_non_recursive().is_some() || contains_string || has_tagged_unions);
+        let derive_debug = debug && !manual_debug;
+        let partial_eq = !message.manual_print() && message.vla(self.parser).is_none();
+        let manual_partial_eq = partial_eq && has_tagged_unions;
+        let derive_partial_eq = partial_eq && !manual_partial_eq;
+        self.generate_derives(
+            &[("Debug", derive_debug), ("PartialEq", derive_partial_eq)],
+            contains_string,
+        )?;
         writeln!(self.output_file, "#[repr(C, packed)]")?;
         writeln!(self.output_file, "pub struct {} {{", upper_camel_name)?;
         for field in message.fields() {
@@ -522,33 +811,15 @@ impl ApiGenContext<'_> {
         writeln!(self.output_file, "}}")?;
         writeln!(self.output_file)?;
 
-        writeln!(self.output_file, "impl Default for {} {{", upper_camel_name)?;
-        writeln!(self.output_file, "    fn default() -> Self {{")?;
-        writeln!(self.output_file, "        Self {{")?;
-        for field in message.fields() {
-            if field.name == "_vl_msg_id" {
-                writeln!(self.output_file, "            _vl_msg_id: Self::msg_id(),")?;
-            } else {
-                writeln!(
-                    self.output_file,
-                    "            {}: Default::default(),",
-                    field.name,
-                )?;
-            }
-        }
-        writeln!(self.output_file, "        }}")?;
-        writeln!(self.output_file, "    }}")?;
-        writeln!(self.output_file, "}}")?;
-        writeln!(self.output_file)?;
+        self.generate_default_trait(message.name(), message.fields(), true)?;
 
         self.generate_endian_swap(message.name(), EndianSwapInput::Fields(message.fields()))?;
 
-        // Manually implement fmt::Debug so that the zero-length (but actually variable-length)
-        // field isn't printed to avoid misleading anyone looking at the output, or because the
-        // message contains a string and so can't be copied, which the derived implementation
-        // requires for packed types
-        if message.vla_non_recursive().is_some() || (contains_string && !message.manual_print()) {
+        if manual_debug {
             self.generate_debug_trait(message.name(), message.fields(), contains_string)?;
+        }
+        if manual_partial_eq {
+            self.generate_partial_eq_trait(message.name(), message.fields())?;
         }
 
         writeln!(
@@ -674,7 +945,10 @@ impl ApiGenContext<'_> {
     fn generate_alias(&mut self, alias: &Alias) -> Result<(), Error> {
         let upper_camel_name = to_upper_camel_case(&alias.field().name);
 
-        let opt_derives = if alias.manual_print() {
+        let well_known = WellKnownAlias::detect(&self.module, alias);
+        let opt_derives = if well_known.is_some() {
+            "PartialEq, Default, "
+        } else if alias.manual_print() {
             ""
         } else {
             "Debug, PartialEq, Default, "
@@ -699,6 +973,10 @@ impl ApiGenContext<'_> {
         }
         if !alias.manual_endian() {
             self.generate_endian_swap(&alias.field().name, EndianSwapInput::Alias(alias.field()))?;
+        }
+
+        if let Some(well_known) = well_known {
+            self.generate_well_known_alias_impls(&alias.field().name, well_known)?;
         }
 
         Ok(())
@@ -763,6 +1041,12 @@ impl ApiGenContext<'_> {
                 variant.id, variant.id,
             )?;
         }
+        // If the enum has no gaps, this is unreachable. Not worth the effort of working this out,
+        // so just suppress the warning.
+        writeln!(
+            self.output_file,
+            "            #[allow(unreachable_patterns)]"
+        )?;
         writeln!(self.output_file, "            _ => {{")?;
         writeln!(self.output_file, "                let tmp = self.0;")?;
         writeln!(self.output_file, "                tmp.fmt(f)")?;
@@ -825,19 +1109,12 @@ impl ApiGenContext<'_> {
             upper_camel_name, e.size,
         )?;
 
-        let upper_name = format!("{}_", e.name.to_uppercase());
         for variant in &e.variants {
-            // For ease of use, strip off the enumflag name being used as part of each defined
-            // flag, since this is redundant as the flags are already namespaced by the enumflag
-            // type
-            let id = variant
-                .id
-                .strip_prefix(&upper_name)
-                .unwrap_or(variant.id.as_str());
             writeln!(
                 self.output_file,
                 "        const {} = {};",
-                id, variant.value,
+                enumflag_const_name(&e.name, &variant.id),
+                variant.value,
             )?;
         }
         writeln!(self.output_file, "    }}")?;
@@ -912,13 +1189,7 @@ impl ApiGenContext<'_> {
     fn generate_union(&mut self, un: &Union) -> Result<(), Error> {
         let upper_camel_name = to_upper_camel_case(un.name());
 
-        if let Some(comment) = un.comment() {
-            writeln!(
-                self.output_file,
-                "#[doc = \"{}\"]",
-                comment.replace("\"", "\\\"")
-            )?;
-        }
+        self.generate_doc_comment(un.comment())?;
         writeln!(self.output_file, "#[derive(Copy, Clone)]",)?;
         writeln!(self.output_file, "#[repr(C, packed)]")?;
         writeln!(self.output_file, "pub union {} {{", upper_camel_name)?;
@@ -960,131 +1231,67 @@ impl ApiGenContext<'_> {
             EndianSwapInput::Fields(fields) => fields,
             EndianSwapInput::Alias(field) => std::slice::from_ref(field),
         };
+
+        // Snapshot each discriminator in host byte order before any field is swapped, so that
+        // tagged union arms are selected correctly regardless of field order.
+        let mut discriminators_seen = HashSet::new();
+        for tagged_union in fields.iter().filter_map(Field::tagged_union) {
+            let discriminator = &tagged_union.discriminator;
+            if !discriminators_seen.insert(discriminator) {
+                continue;
+            }
+            writeln!(
+                self.output_file,
+                "            let mut tmp_{} = self.{};",
+                discriminator, discriminator
+            )?;
+            writeln!(self.output_file, "            if !to_net {{",)?;
+            writeln!(
+                self.output_file,
+                "                ::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut tmp_{}, false);",
+                discriminator,
+            )?;
+            writeln!(self.output_file, "            }}",)?;
+        }
+
         for field in fields {
-            let field_name = match input {
-                EndianSwapInput::Fields(_) => &field.name,
-                EndianSwapInput::Alias(_) => "0",
+            let place = match input {
+                EndianSwapInput::Fields(_) => format!("self.{}", field.name),
+                EndianSwapInput::Alias(_) => "self.0".to_string(),
             };
 
-            let mut gen_count_variable = |count_field| {
-                let count_field = fields
-                    .iter()
-                    .find(|field| &field.name == count_field)
-                    .ok_or_else(|| {
-                        Error::Unimplemented(format!(
-                            "Unable to find variable count field {}",
-                            count_field
-                        ))
-                    })?;
-                let vla_elem_type = self.parser.to_rust_vla_elem_type(&field.r#type)?;
-                writeln!(self.output_file, "            let count = if to_net {{",)?;
+            if let Some(tagged_union) = field.tagged_union() {
                 writeln!(
                     self.output_file,
-                    "                {}::from_be(self.{})",
-                    count_field.r#type, count_field.name,
+                    "            match tmp_{} {{",
+                    tagged_union.discriminator
                 )?;
-                writeln!(self.output_file, "            }} else {{",)?;
+                for arm in &tagged_union.arms {
+                    writeln!(
+                        self.output_file,
+                        "                {} => {{",
+                        case_path(tagged_union, &arm.case)
+                    )?;
+                    // Union arms can't be variable-length arrays, so there are no siblings needed
+                    // to look up a count
+                    self.generate_field_endian_swap(
+                        &arm.field,
+                        &format!("{}.{}", place, arm.field.name),
+                        &[],
+                        "                    ",
+                    )?;
+                    writeln!(self.output_file, "                }}")?;
+                }
+                // If the enum has no gaps, this is unreachable. Not worth the effort of working this out,
+                // so just suppress the warning.
                 writeln!(
                     self.output_file,
-                    "                self.{}",
-                    count_field.name,
+                    "                #[allow(unreachable_patterns)]"
                 )?;
-                writeln!(self.output_file, "            }};",)?;
-                writeln!(
-                    self.output_file,
-                    "            let array = ::std::slice::from_raw_parts_mut(std::ptr::addr_of_mut!(self.{}) as *mut {}, count as usize);",
-                    field_name, vla_elem_type,
-                )?;
-                Ok::<_, Error>(())
-            };
-
-            match field.r#type.as_str() {
-                "u8" | "bool" => {
-                    writeln!(
-                        self.output_file,
-                        "            // self.{} = self.{} (no-op)",
-                        field_name, field_name
-                    )?;
-                }
-                "string" => {
-                    writeln!(
-                        self.output_file,
-                        "            ::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut self.{}, to_net);",
-                        field_name,
-                    )?;
-                }
-                "u16" | "u32" | "u64" | "i16" | "i32" | "i64" => match &field.size {
-                    Some(FieldSize::Fixed(size)) => {
-                        writeln!(self.output_file, "            for i in 0..{} {{", size)?;
-                        writeln!(
-                            self.output_file,
-                            "                self.{}[i] = self.{}[i].to_be();",
-                            field_name, field_name
-                        )?;
-                        writeln!(self.output_file, "        }}",)?;
-                    }
-                    Some(FieldSize::Variable(Some(count_field))) => {
-                        gen_count_variable(count_field)?;
-                        writeln!(self.output_file, "            for elem in array {{")?;
-                        writeln!(self.output_file, "                *elem = elem.to_be();",)?;
-                        writeln!(self.output_file, "            }}")?;
-                    }
-                    Some(FieldSize::Variable(None)) => {
-                        return Err(Error::Unimplemented(format!(
-                            "variable length array field {} without count",
-                            field_name
-                        )));
-                    }
-                    None => {
-                        writeln!(
-                            self.output_file,
-                            "            self.{} = self.{}.to_be();",
-                            field_name, field.name
-                        )?;
-                    }
-                },
-                "f64" => {
-                    writeln!(
-                        self.output_file,
-                        "            // self.{} = self.{} (no-op according to VPP API)",
-                        field_name, field_name
-                    )?;
-                }
-                _ => match &field.size {
-                    Some(FieldSize::Fixed(size)) => {
-                        writeln!(self.output_file, "            for i in 0..{} {{", size)?;
-                        writeln!(
-                            self.output_file,
-                            "                ::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut self.{}[i], to_net);",
-                            field_name
-                        )?;
-                        writeln!(self.output_file, "            }}",)?;
-                    }
-                    Some(FieldSize::Variable(Some(count_field))) => {
-                        gen_count_variable(count_field)?;
-                        writeln!(self.output_file, "            for elem in array {{")?;
-                        writeln!(
-                            self.output_file,
-                            "                ::vpp_plugin::vlibapi::EndianSwap::endian_swap(elem, to_net);",
-                        )?;
-                        writeln!(self.output_file, "            }}",)?;
-                    }
-                    Some(FieldSize::Variable(None)) => {
-                        return Err(Error::Unimplemented(format!(
-                            "variable length array field {} without count",
-                            field_name
-                        )));
-                    }
-                    None => {
-                        // Copy out the value to a temporary since the structs are packed and so it
-                        // may not be properly aligned
-                        writeln!(
-                            self.output_file,
-                            "            ::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut self.{}, to_net);",
-                            field_name,
-                        )?;
-                    }
-                },
+                writeln!(self.output_file, "                _ => {{}}")?;
+                writeln!(self.output_file, "            }}")?;
+            } else {
+                self.generate_field_endian_swap(field, &place, fields, "            ")?;
             }
         }
         writeln!(self.output_file, "        }}",)?;
@@ -1095,18 +1302,159 @@ impl ApiGenContext<'_> {
         Ok(())
     }
 
+    /// Generate code to endian swap a single field that isn't a tagged union
+    ///
+    /// `place` is the expression for the field, e.g. `self.foo`, and `fields` are the field's
+    /// siblings, used to look up the count of a variable-length array. Each line of generated
+    /// code is prefixed with `indent`.
+    fn generate_field_endian_swap(
+        &mut self,
+        field: &Field,
+        place: &str,
+        fields: &[Field],
+        indent: &str,
+    ) -> Result<(), Error> {
+        let mut gen_count_variable = |count_field| {
+            let count_field = fields
+                .iter()
+                .find(|field| &field.name == count_field)
+                .ok_or_else(|| {
+                    Error::Unimplemented(format!(
+                        "Unable to find variable count field {}",
+                        count_field
+                    ))
+                })?;
+            let vla_elem_type = self.parser.to_rust_vla_elem_type(&field.r#type)?;
+            writeln!(self.output_file, "{indent}let count = if to_net {{")?;
+            writeln!(
+                self.output_file,
+                "{indent}    {}::from_be(self.{})",
+                count_field.r#type, count_field.name,
+            )?;
+            writeln!(self.output_file, "{indent}}} else {{")?;
+            writeln!(self.output_file, "{indent}    self.{}", count_field.name)?;
+            writeln!(self.output_file, "{indent}}};")?;
+            writeln!(
+                self.output_file,
+                "{indent}let array = ::std::slice::from_raw_parts_mut(std::ptr::addr_of_mut!({place}) as *mut {vla_elem_type}, count as usize);",
+            )?;
+            Ok::<_, Error>(())
+        };
+
+        match field.r#type.as_str() {
+            "u8" | "bool" => {
+                writeln!(self.output_file, "{indent}// {place} = {place} (no-op)")?;
+            }
+            "string" => {
+                writeln!(
+                    self.output_file,
+                    "{indent}::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut {place}, to_net);",
+                )?;
+            }
+            // Primitives may not be aligned within packed types, so they must be swapped by value
+            // rather than by taking a reference
+            "u16" | "u32" | "u64" | "i16" | "i32" | "i64" => match &field.size {
+                Some(FieldSize::Fixed(size)) => {
+                    writeln!(self.output_file, "{indent}for i in 0..{size} {{")?;
+                    writeln!(
+                        self.output_file,
+                        "{indent}    {place}[i] = {place}[i].to_be();"
+                    )?;
+                    writeln!(self.output_file, "{indent}}}")?;
+                }
+                Some(FieldSize::Variable(Some(count_field))) => {
+                    gen_count_variable(count_field)?;
+                    writeln!(self.output_file, "{indent}for elem in array {{")?;
+                    writeln!(self.output_file, "{indent}    *elem = elem.to_be();")?;
+                    writeln!(self.output_file, "{indent}}}")?;
+                }
+                Some(FieldSize::Variable(None)) => {
+                    return Err(Error::Unimplemented(format!(
+                        "variable length array field {} without count",
+                        field.name
+                    )));
+                }
+                None => {
+                    writeln!(self.output_file, "{indent}{place} = {place}.to_be();")?;
+                }
+            },
+            "f64" => {
+                writeln!(
+                    self.output_file,
+                    "{indent}// {place} = {place} (no-op according to VPP API)"
+                )?;
+            }
+            _ => match &field.size {
+                Some(FieldSize::Fixed(size)) => {
+                    writeln!(self.output_file, "{indent}for i in 0..{size} {{")?;
+                    writeln!(
+                        self.output_file,
+                        "{indent}    ::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut {place}[i], to_net);",
+                    )?;
+                    writeln!(self.output_file, "{indent}}}")?;
+                }
+                Some(FieldSize::Variable(Some(count_field))) => {
+                    gen_count_variable(count_field)?;
+                    writeln!(self.output_file, "{indent}for elem in array {{")?;
+                    writeln!(
+                        self.output_file,
+                        "{indent}    ::vpp_plugin::vlibapi::EndianSwap::endian_swap(elem, to_net);",
+                    )?;
+                    writeln!(self.output_file, "{indent}}}")?;
+                }
+                Some(FieldSize::Variable(None)) => {
+                    return Err(Error::Unimplemented(format!(
+                        "variable length array field {} without count",
+                        field.name
+                    )));
+                }
+                None => {
+                    writeln!(
+                        self.output_file,
+                        "{indent}::vpp_plugin::vlibapi::EndianSwap::endian_swap(&mut {place}, to_net);",
+                    )?;
+                }
+            },
+        }
+
+        Ok(())
+    }
+
     fn generate_type(&mut self, t: &Type) -> Result<(), Error> {
         let upper_camel_name = to_upper_camel_case(t.name());
 
+        let well_known = WellKnownType::detect(&self.module, t);
+        let implied_fields = well_known::implied_fields(self.parser, &self.module, t);
+        let fields = implied_fields.as_deref().unwrap_or(t.fields());
+        let manual_print = t.manual_print() && well_known.is_none();
+
         let contains_string = matches!(t.vla(self.parser), Some((_, CountDescriptor::String(_))));
-        let opt_derives = if t.manual_print() {
-            ""
-        } else if t.vla_non_recursive().is_some() || contains_string {
-            "Default, "
-        } else {
-            "Debug, PartialEq, Default, "
-        };
-        self.generate_derives(opt_derives, contains_string)?;
+        let has_tagged_unions = has_tagged_unions(fields);
+        // Debug is implemented manually for types with a VLA to avoid printing the zero-length
+        // field, for strings since they can't be copied, which the derived implementation
+        // requires for packed types, for tagged unions to only print the selected arm, and for
+        // well-known types
+        let debug = !manual_print;
+        let manual_debug = debug
+            && (well_known.is_some()
+                || t.vla_non_recursive().is_some()
+                || contains_string
+                || has_tagged_unions);
+        let derive_debug = debug && !manual_debug;
+        let partial_eq = !manual_print && t.vla(self.parser).is_none();
+        let manual_partial_eq = partial_eq && has_tagged_unions;
+        let derive_partial_eq = partial_eq && !manual_partial_eq;
+        let manual_default = !manual_print && has_tagged_unions;
+        let derive_default = !manual_print && !manual_default;
+        self.generate_doc_comment(t.comment())?;
+        self.generate_derives(
+            &[
+                ("Debug", derive_debug),
+                ("PartialEq", derive_partial_eq),
+                ("Default", derive_default),
+            ],
+            contains_string,
+        )?;
         writeln!(self.output_file, "#[repr(C, packed)]")?;
         writeln!(self.output_file, "pub struct {} {{", upper_camel_name)?;
         for field in t.fields() {
@@ -1124,16 +1472,21 @@ impl ApiGenContext<'_> {
             writeln!(self.output_file)?;
         }
 
-        // Manually implement fmt::Debug so that the zero-length (but actually variable-length)
-        // field isn't printed to avoid misleading anyone looking at the output, or because the
-        // type contains a string and so can't be copied, which the derived implementation
-        // requires for packed types
-        if t.vla_non_recursive().is_some() || (contains_string && !t.manual_print()) {
-            self.generate_debug_trait(t.name(), t.fields(), contains_string)?;
+        if manual_debug {
+            match well_known {
+                Some(well_known) => self.generate_well_known_type_impls(t.name(), well_known)?,
+                None => self.generate_debug_trait(t.name(), fields, contains_string)?,
+            }
+        }
+        if manual_partial_eq {
+            self.generate_partial_eq_trait(t.name(), fields)?;
+        }
+        if manual_default {
+            self.generate_default_trait(t.name(), fields, false)?;
         }
 
         if !t.manual_endian() {
-            self.generate_endian_swap(t.name(), EndianSwapInput::Fields(t.fields()))?;
+            self.generate_endian_swap(t.name(), EndianSwapInput::Fields(fields))?;
         }
         Ok(())
     }
@@ -1276,8 +1629,6 @@ impl ApiGenContext<'_> {
                     self.output_file,
                     "        ::vpp_plugin::vlibapi::registration_scope(|s| {{"
                 )?;
-                // TODO: check for client_index field in caller
-                // TODO: check for context field in caller and reply
                 writeln!(
                     self.output_file,
                     "            if let Some(reg) = s.from_client_index(vm, mp.client_index) {{"
@@ -1616,7 +1967,69 @@ impl ApiGenContext<'_> {
         Ok(())
     }
 
+    fn generate_counters(&mut self) -> Result<(), Error> {
+        for counters in self.parser.counters() {
+            writeln!(self.output_file, "#[derive(::vpp_plugin::ErrorCounters)]")?;
+            writeln!(
+                self.output_file,
+                "pub enum {}ErrorCounter {{",
+                to_upper_camel_case(counters.name())
+            )?;
+            for e in counters.elements() {
+                let upper_camel_name = to_upper_camel_case(e.name());
+                writeln!(
+                    self.output_file,
+                    "    #[error_counter(name = \"{}\", description = \"{}\", severity = {})]",
+                    e.name(),
+                    e.description(),
+                    e.severity().to_uppercase()
+                )?;
+                writeln!(self.output_file, "    {},", upper_camel_name)?;
+            }
+            writeln!(self.output_file, "}}")?;
+        }
+
+        Ok(())
+    }
+
+    /// Check that service messages have the fields that the generated handlers rely on
+    ///
+    /// vppapigen doesn't enforce these, but generated handlers that reply need `client_index`
+    /// in the caller to find the registration and, unless the reply is a stream of messages
+    /// sent by the handler, `context` in both the caller and the reply.
+    fn check_services(&self) -> Result<(), Error> {
+        let require_field = |service: &str, message: &str, field: &'static str| {
+            let has_field = self
+                .parser
+                .message(message)
+                .is_some_and(|m| m.has_scalar_field(field, "u32"));
+            if has_field {
+                Ok(())
+            } else {
+                Err(Error::ServiceMessageMissingField {
+                    service: service.to_string(),
+                    message: message.to_string(),
+                    field,
+                })
+            }
+        };
+
+        for service in self.parser.services() {
+            if service.reply() == "null" {
+                continue;
+            }
+            require_field(service.caller(), service.caller(), "client_index")?;
+            if !service.stream() || service.stream_message().is_some() {
+                require_field(service.caller(), service.caller(), "context")?;
+                require_field(service.caller(), service.reply(), "context")?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn generate(mut self) -> Result<(), Error> {
+        self.check_services()?;
         self.output_json_file
             .write_all(generate_json(self.parser)?.as_bytes())?;
         self.generate_aliases()?;
@@ -1625,6 +2038,72 @@ impl ApiGenContext<'_> {
         self.generate_types()?;
         self.generate_messages()?;
         self.generate_register()?;
+        self.generate_counters()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Generate code for an API file in the tests directory
+    fn generate_file(filename: &str) -> Result<(), Error> {
+        let output_dir = env::temp_dir().join(format!(
+            "vpp-plugin-api-gen-test-{}-{}",
+            std::process::id(),
+            Path::new(filename).file_stem().unwrap().to_string_lossy()
+        ));
+        let result = Builder::new(
+            &format!("{}/{}", env!("CARGO_MANIFEST_DIR"), filename),
+            &output_dir.to_string_lossy(),
+        )
+        .and_then(Builder::generate);
+        let _ = std::fs::remove_dir_all(&output_dir);
+        result
+    }
+
+    /// Generate code for an API file and expect an error, returning that error
+    fn generate_file_expect_error(filename: &str) -> Error {
+        match generate_file(filename) {
+            Ok(()) => panic!("unexpectedly generated {} successfully", filename),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn service_fields() {
+        generate_file("tests/service_fields.api").unwrap();
+    }
+
+    #[test]
+    fn service_caller_missing_client_index() {
+        assert_eq!(
+            generate_file_expect_error("tests/service_caller_missing_client_index.api").to_string(),
+            "Message \"create\" used in service for \"create\" is missing required field \"u32 client_index\""
+        );
+    }
+
+    #[test]
+    fn service_caller_missing_context() {
+        assert_eq!(
+            generate_file_expect_error("tests/service_caller_missing_context.api").to_string(),
+            "Message \"create\" used in service for \"create\" is missing required field \"u32 context\""
+        );
+    }
+
+    #[test]
+    fn service_reply_missing_context() {
+        assert_eq!(
+            generate_file_expect_error("tests/service_reply_missing_context.api").to_string(),
+            "Message \"create_reply\" used in service for \"create\" is missing required field \"u32 context\""
+        );
+    }
+
+    #[test]
+    fn enumflag_const_name_strips_prefix() {
+        assert_eq!(enumflag_const_name("tu_flags", "TU_FLAGS_A"), "A");
+        // Variants not prefixed with the enumflag name are left as is
+        assert_eq!(enumflag_const_name("tu_flags", "OTHER_A"), "OTHER_A");
     }
 }

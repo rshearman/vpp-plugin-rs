@@ -1,0 +1,19 @@
+option version = "1.0.0";
+
+enum shared_import_enum : u8 {
+    SHARED_IMPORT_ENUM_A = 1,
+    SHARED_IMPORT_ENUM_B,
+};
+
+typedef shared_import_type {
+    vl_api_shared_import_enum_t e;
+    u32 value;
+};
+
+typedef u32 shared_import_alias;
+
+/* Messages in imported files are ignored */
+define shared_import_types_message {
+    u32 client_index;
+    u32 context;
+};
