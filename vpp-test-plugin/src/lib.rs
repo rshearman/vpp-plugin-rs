@@ -38,7 +38,7 @@ use vpp_plugin::{
         types::SwIfIndex,
     },
     vnet_feature_init,
-    vppinfra::{error::ErrorStack, unlikely},
+    vppinfra::{cache::CacheLineAlignMarker, error::ErrorStack, unlikely},
 };
 
 use crate::ip_types_api::{
@@ -178,12 +178,16 @@ lazy_static! {
     format_trace = format_test_trace,
 )]
 struct TestNode {
+    // Force cache alignment as a demonstration for a node where performance does matter (which
+    // isn't this one)
+    _align: CacheLineAlignMarker,
     udp_src_port_deny_policy: BarrierRwLock<Option<u16>>,
 }
 
 impl TestNode {
     const fn new() -> Self {
         Self {
+            _align: CacheLineAlignMarker::new(),
             udp_src_port_deny_policy: BarrierRwLock::new(None),
         }
     }
