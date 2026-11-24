@@ -471,9 +471,22 @@ impl<T: Ord> Ord for VecRef<T> {
     }
 }
 
-// SAFETY: it's fine to deallocate the memory from another thread, and fine to access Vec<T> from
-// another thread as long as T is Send
+// SAFETY: a `VecRef<T>` is never owned by value, only accessed through references created by
+// `from_raw*` or `Vec::as_vec_ref*`, so this impl only makes `&mut VecRef<T>` Send. A
+// `&mut VecRef<T>` on another thread lets elements be read, written, moved out and dropped there,
+// and lets the vector header be updated, but never lets the vector be reallocated or freed, and the
+// vector's memory is not tied to the thread that allocated it. Sending a `&mut VecRef<T>` is
+// therefore equivalent to sending a `&mut [T]`, which is sound as long as T is Send.
 unsafe impl<T> Send for VecRef<T> where T: Send {}
+
+// SAFETY: a `&VecRef<T>` only permits read-only access: the methods taking `&self` read the
+// vector header (and, for `capacity`, the allocator's metadata for the allocation) and expose the
+// elements as `&[T]`. All mutation of the header or elements requires `&mut VecRef<T>`, and the
+// `from_raw*` constructors require that nothing else mutates the vector for the lifetime of the
+// returned reference. The `UnsafeCell` inside `foreign_types::Opaque` is only a marker and is never
+// used for interior mutability. Sharing a `&VecRef<T>` across threads is therefore equivalent to
+// sharing a `&[T]`, which is sound as long as T is Sync.
+unsafe impl<T> Sync for VecRef<T> where T: Sync {}
 
 /// Owned dynamically resizable array
 ///
@@ -1144,6 +1157,19 @@ impl<T> Drop for IntoIter<T> {
     }
 }
 
+// SAFETY: an `IntoIter<T>` owns its allocation and the remaining elements, just as a `Vec<T>` does.
+// Moving it to another thread means the remaining elements are moved out or dropped there and the
+// allocation is freed there, which is fine since the memory is not tied to the thread that
+// allocated it, as long as T is Send.
+unsafe impl<T> Send for IntoIter<T> where T: Send {}
+
+// SAFETY: an `&IntoIter<T>` only permits read-only access: the methods taking `&self` read `len`
+// and (for `Clone`) read the remaining elements as `&T`. Advancing the iterator, moving elements out
+// and freeing the allocation all require `&mut IntoIter<T>` or ownership. Sharing an
+// `&IntoIter<T>` across threads is therefore equivalent to sharing a `&[T]`, which is sound as long
+// as T is Sync.
+unsafe impl<T> Sync for IntoIter<T> where T: Sync {}
+
 /// Extension trait for slices to convert to VPP vectors
 pub trait SliceExt<T> {
     /// Converts the slice to a VPP vector by cloning each element
@@ -1208,6 +1234,13 @@ __impl_slice_eq! { [const N: usize] Vec<T>, &[U; N] }
 // another thread as long as T is Send
 unsafe impl<T> Send for Vec<T> where T: Send {}
 
+// SAFETY: a `&Vec<T>` only permits read-only access: the methods taking `&self` (including those
+// reached via `as_vec_ref` and `Deref`) read the vector header and expose the elements as `&[T]`,
+// and there is no interior mutability in the vector or its header. Mutation (including
+// reallocation and deallocation) requires `&mut Vec<T>` or ownership. Sharing a `&Vec<T>` across
+// threads is therefore equivalent to sharing a `&[T]`, which is sound as long as T is Sync.
+unsafe impl<T> Sync for Vec<T> where T: Sync {}
+
 /// Creates a [`Vec<T>`] from a list of elements
 ///
 /// Allows creating a VPP vector in a similar way to the standard library's `vec!` macro.
@@ -1234,6 +1267,146 @@ mod tests {
         VecRef, clib_mem_init,
         vec::{IntoIter, SliceExt, Vec},
     };
+
+    fn assert_send<T: Send + ?Sized>() {}
+    fn assert_sync<T: Sync + ?Sized>() {}
+    fn assert_unpin<T: Unpin + ?Sized>() {}
+
+    /// Fails to compile if `$ty` implements `$trait`
+    ///
+    /// If `$ty: $trait` then both blanket impls apply and the type parameter of `AmbiguousIfImpl`
+    /// can't be inferred.
+    macro_rules! assert_not_impl {
+        ($ty:ty: $trait:path) => {{
+            trait AmbiguousIfImpl<A> {
+                fn some_item() {}
+            }
+            impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
+            impl<T: ?Sized + $trait> AmbiguousIfImpl<u8> for T {}
+            let _ = <$ty as AmbiguousIfImpl<_>>::some_item;
+        }};
+    }
+
+    #[test]
+    fn auto_traits() {
+        use std::{cell::Cell, marker::PhantomPinned, rc::Rc, sync::MutexGuard};
+
+        assert_send::<Vec<u32>>();
+        assert_sync::<Vec<u32>>();
+        assert_unpin::<Vec<u32>>();
+        assert_send::<VecRef<u32>>();
+        assert_sync::<VecRef<u32>>();
+        assert_unpin::<VecRef<u32>>();
+        assert_send::<IntoIter<u32>>();
+        assert_sync::<IntoIter<u32>>();
+        assert_unpin::<IntoIter<u32>>();
+
+        // Send requires T: Send, but not T: Sync
+        assert_send::<Vec<Cell<u32>>>();
+        assert_send::<VecRef<Cell<u32>>>();
+        assert_send::<IntoIter<Cell<u32>>>();
+        assert_not_impl!(Vec<Rc<u32>>: Send);
+        assert_not_impl!(VecRef<Rc<u32>>: Send);
+        assert_not_impl!(IntoIter<Rc<u32>>: Send);
+        assert_not_impl!(Vec<MutexGuard<'static, u32>>: Send);
+        assert_not_impl!(VecRef<MutexGuard<'static, u32>>: Send);
+        assert_not_impl!(IntoIter<MutexGuard<'static, u32>>: Send);
+
+        // Sync requires T: Sync, but not T: Send
+        assert_sync::<Vec<MutexGuard<'static, u32>>>();
+        assert_sync::<VecRef<MutexGuard<'static, u32>>>();
+        assert_sync::<IntoIter<MutexGuard<'static, u32>>>();
+        assert_not_impl!(Vec<Cell<u32>>: Sync);
+        assert_not_impl!(VecRef<Cell<u32>>: Sync);
+        assert_not_impl!(IntoIter<Cell<u32>>: Sync);
+        assert_not_impl!(Vec<Rc<u32>>: Sync);
+        assert_not_impl!(VecRef<Rc<u32>>: Sync);
+        assert_not_impl!(IntoIter<Rc<u32>>: Sync);
+
+        // Vec<T> and IntoIter<T> hold pointers, so moving them doesn't move the elements
+        assert_unpin::<Vec<PhantomPinned>>();
+        assert_unpin::<IntoIter<PhantomPinned>>();
+    }
+
+    #[test]
+    fn share_across_threads() {
+        clib_mem_init();
+
+        let v: Vec<u32> = (0..100).collect();
+        let expected_sum: u32 = (0..100).sum();
+        let v_ref: &VecRef<u32> = v.as_vec_ref().unwrap();
+
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    assert_eq!(v.len(), 100);
+                    assert!(v.capacity() >= 100);
+                    assert_eq!(v.iter().sum::<u32>(), expected_sum);
+                    assert_eq!(v_ref.len(), 100);
+                    assert!(v_ref.capacity() >= 100);
+                    assert_eq!(v_ref.iter().sum::<u32>(), expected_sum);
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn send_across_threads() {
+        clib_mem_init();
+
+        let mut v: Vec<u32> = (0..100).collect();
+        v = std::thread::spawn(move || {
+            v.push(100);
+            v
+        })
+        .join()
+        .unwrap();
+        assert_eq!(v.len(), 101);
+        assert_eq!(v[100], 100);
+
+        // Deallocate on a different thread from the one that allocated
+        std::thread::spawn(move || drop(v)).join().unwrap();
+    }
+
+    #[test]
+    fn into_iter_share_across_threads() {
+        clib_mem_init();
+
+        let v: Vec<u32> = (0..100).collect();
+        let mut iter = v.into_iter();
+        assert_eq!(iter.next(), Some(0));
+
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    assert_eq!(iter.len(), 99);
+                    assert!(iter.clone().eq(1..100));
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn into_iter_send_across_threads() {
+        clib_mem_init();
+
+        let v: Vec<String> = (0..100).map(|i| i.to_string()).collect();
+        let mut iter = v.into_iter();
+        assert_eq!(iter.next().as_deref(), Some("0"));
+
+        let mut iter = std::thread::spawn(move || {
+            assert_eq!(iter.next().as_deref(), Some("1"));
+            assert_eq!(iter.next_back().as_deref(), Some("99"));
+            iter
+        })
+        .join()
+        .unwrap();
+        assert_eq!(iter.next().as_deref(), Some("2"));
+
+        // Drop the remaining elements and deallocate on a different thread from the one that
+        // allocated
+        std::thread::spawn(move || drop(iter)).join().unwrap();
+    }
 
     #[test]
     fn push_pop() {
