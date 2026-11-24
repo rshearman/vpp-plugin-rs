@@ -317,34 +317,49 @@ impl Field {
         self.tagged_union.as_deref()
     }
 
-    /// Returns optional description of the count
-    fn vla(&self, parser: &ApiParser, other_fields: &[Field]) -> Option<CountDescriptor> {
+    /// Returns optional tuple of VLA field with description of count variable
+    ///
+    /// If the VLA is nested inside a type, the returned field is the innermost VLA field,
+    /// rather than this field, so that the element type can be determined.
+    fn vla<'a>(
+        &'a self,
+        parser: &'a ApiParser,
+        other_fields: &[Field],
+    ) -> Option<(&'a Field, CountDescriptor)> {
         if matches!(&self.size, Some(FieldSize::Variable(None))) && self.r#type == "string" {
-            return Some(CountDescriptor::String(vec![self.name.clone()]));
+            return Some((self, CountDescriptor::String(vec![self.name.clone()])));
         }
         if let Some(FieldSize::Variable(Some(count_field))) = &self.size
             && let Some(count_field) = other_fields.iter().find(|field| &field.name == count_field)
         {
-            return Some(CountDescriptor::Field {
-                path: vec![count_field.name.clone()],
-                r#type: count_field.r#type.clone(),
-            });
+            return Some((
+                self,
+                CountDescriptor::Field {
+                    path: vec![count_field.name.clone()],
+                    r#type: count_field.r#type.clone(),
+                },
+            ));
         }
         if let Ok(Some((_, type_entry))) = parser.lookup_field_type(&self.r#type) {
-            let count_descr = type_entry.vla(parser)?;
+            let (field, count_descr) = type_entry.vla(parser)?;
+            // A string typedef has no field of its own, so use this field
+            let field = field.unwrap_or(self);
             match count_descr {
                 CountDescriptor::Field { path, r#type } => {
                     let mut new_count_path = vec![self.name.clone()];
                     new_count_path.extend(path);
-                    return Some(CountDescriptor::Field {
-                        path: new_count_path,
-                        r#type,
-                    });
+                    return Some((
+                        field,
+                        CountDescriptor::Field {
+                            path: new_count_path,
+                            r#type,
+                        },
+                    ));
                 }
                 CountDescriptor::String(path) => {
                     let mut new_path = vec![self.name.clone()];
                     new_path.extend(path);
-                    return Some(CountDescriptor::String(new_path));
+                    return Some((field, CountDescriptor::String(new_path)));
                 }
             }
         }
@@ -957,20 +972,24 @@ pub enum TypeDetails {
 }
 
 impl TypeDetails {
-    /// Returns optional description of the count
-    fn vla(&self, parser: &ApiParser) -> Option<CountDescriptor> {
+    /// Returns optional tuple of VLA field with description of count variable
+    ///
+    /// The field is `None` if the type itself is a variable-length string typedef.
+    fn vla<'a>(&'a self, parser: &'a ApiParser) -> Option<(Option<&'a Field>, CountDescriptor)> {
         let fields = match self {
             Self::TypedefBlock { fields, .. } => fields,
             Self::Typedef { r#type, size }
                 if matches!(size, Some(FieldSize::Variable(None))) && r#type == "string" =>
             {
-                return Some(CountDescriptor::String(vec![]));
+                return Some((None, CountDescriptor::String(vec![])));
             }
             _ => return None,
         };
 
         let field = fields.last()?;
-        field.vla(parser, fields)
+        field
+            .vla(parser, fields)
+            .map(|(field, count_descr)| (Some(field), count_descr))
     }
 }
 
@@ -982,8 +1001,10 @@ pub struct TypeEntry {
 }
 
 impl TypeEntry {
-    /// Returns optional description of the count
-    fn vla(&self, parser: &ApiParser) -> Option<CountDescriptor> {
+    /// Returns optional tuple of VLA field with description of count variable
+    ///
+    /// The field is `None` if the type itself is a variable-length string typedef.
+    fn vla<'a>(&'a self, parser: &'a ApiParser) -> Option<(Option<&'a Field>, CountDescriptor)> {
         self.details.vla(parser)
     }
 
@@ -1098,11 +1119,10 @@ impl Message {
     }
 
     /// Returns optional tuple of VLA field with description of count variable
-    pub fn vla(&self, parser: &ApiParser) -> Option<(&Field, CountDescriptor)> {
-        self.fields.last().and_then(|field| {
-            let count_descr = field.vla(parser, &self.fields)?;
-            Some((field, count_descr))
-        })
+    pub fn vla<'a>(&'a self, parser: &'a ApiParser) -> Option<(&'a Field, CountDescriptor)> {
+        self.fields
+            .last()
+            .and_then(|field| field.vla(parser, &self.fields))
     }
 
     pub fn vla_non_recursive(&self) -> Option<&Field> {
@@ -1181,11 +1201,10 @@ impl Type {
     }
 
     /// Returns optional tuple of VLA field with description of count variable
-    pub fn vla(&self, parser: &ApiParser) -> Option<(&Field, CountDescriptor)> {
-        self.fields.last().and_then(|field| {
-            let count_descr = field.vla(parser, &self.fields)?;
-            Some((field, count_descr))
-        })
+    pub fn vla<'a>(&'a self, parser: &'a ApiParser) -> Option<(&'a Field, CountDescriptor)> {
+        self.fields
+            .last()
+            .and_then(|field| field.vla(parser, &self.fields))
     }
 }
 
