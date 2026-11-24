@@ -21,6 +21,7 @@ use vpp_plugin::{
     },
     vlib::{
         self, BufferIndex,
+        cli::CliOutput,
         counter::{CombinedCounter, CombinedCounterIndex, SimpleCounter, SimpleCounterIndex},
         main::sync::BarrierRwLock,
         node::NextNodes,
@@ -744,6 +745,23 @@ fn mp_safe_test_command(vm: &mut vlib::MainRef, _input: &str) -> Result<(), Erro
         ));
     }
 
+    Ok(())
+}
+
+/// CLI command writing output, including partial lines and a final unterminated line
+#[vlib_cli_command(path = "rust-test output", short_help = "rust-test output [error]")]
+fn output_test_command(
+    _vm: &mut vlib::MainRef,
+    input: &str,
+    output: &mut CliOutput,
+) -> Result<(), ErrorStack> {
+    writeln!(output, "line 1");
+    write!(output, "line {}", 2);
+    write!(output, "\nline 3\nline ");
+    write!(output, "4");
+    if input == "error" {
+        return Err(ErrorStack::msg("Test error"));
+    }
     Ok(())
 }
 

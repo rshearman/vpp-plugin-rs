@@ -1134,6 +1134,9 @@ pub fn vnet_feature_init(ts: TokenStream) -> TokenStream {
 ///   taking the barrier. The function can take the barrier itself for just the part of its work
 ///   that needs it, using `MainRef::barrier_sync`.
 ///
+/// The function may optionally take a third argument of type `&mut vlib::cli::CliOutput`, for
+/// writing output to wherever the command was run from, streaming each line as it is written.
+///
 /// # Examples
 ///
 /// ```
@@ -1155,6 +1158,21 @@ pub fn vnet_feature_init(ts: TokenStream) -> TokenStream {
 /// fn show_command(vm: &mut vlib::MainRef, _input: &str) -> Result<(), ErrorStack> {
 ///     // Only hold the barrier while it is needed
 ///     let _guard = vm.barrier_sync();
+///     Ok(())
+/// }
+/// ```
+///
+/// A command writing output:
+///
+/// ```
+/// # use vpp_plugin::{vlib_cli_command, vlib::{self, cli::CliOutput}, vppinfra::error::ErrorStack};
+/// #[vlib_cli_command(path = "show rust-example", short_help = "show rust-example")]
+/// fn show_command(
+///     _vm: &mut vlib::BarrierHeldMainRef,
+///     input: &str,
+///     output: &mut CliOutput,
+/// ) -> Result<(), ErrorStack> {
+///     writeln!(output, "Input: {input}");
 ///     Ok(())
 /// }
 /// ```
@@ -1219,6 +1237,37 @@ pub fn vlib_cli_command(attributes: TokenStream, function: TokenStream) -> Token
             syn::parse_str::<syn::Ident>(format!("_VLIB_CLI_COMMAND_{}", ident).as_ref())
                 .expect("Unable to create identifier");
 
+        // The third argument, for output, is optional
+        let (call, is_mp_safe) = match inputs.len() {
+            2 => (
+                quote!(#ident(::vpp_plugin::vlib::cli::CliMainRef::from_ptr_mut(vm), s.as_str())),
+                quote!(::vpp_plugin::vlib::cli::cli_is_mp_safe(#ident)),
+            ),
+            3 => (
+                quote!({
+                    let mut cli_output = ::vpp_plugin::vlib::cli::CliOutput::from_ptr(vm);
+                    let result = #ident(
+                        ::vpp_plugin::vlib::cli::CliMainRef::from_ptr_mut(vm),
+                        s.as_str(),
+                        &mut cli_output,
+                    );
+                    // Write any partial line before returning to VPP
+                    drop(cli_output);
+                    result
+                }),
+                quote!(::vpp_plugin::vlib::cli::cli_is_mp_safe_with_output(#ident)),
+            ),
+            _ => {
+                return syn::Error::new_spanned(
+                    &inputs,
+                    "#[vlib_cli_command] functions must take 2 or 3 arguments: \
+                     (vm, input) or (vm, input, output)",
+                )
+                .to_compile_error()
+                .into();
+            }
+        };
+
         let output = quote!(
             #(#attrs)*
             #vis #unsafety #abi #constness fn #ident(#inputs) #output #block
@@ -1231,7 +1280,7 @@ pub fn vlib_cli_command(attributes: TokenStream, function: TokenStream) -> Token
             ) -> *mut ::vpp_plugin::bindings::clib_error_t
             {
                 let s = ::vpp_plugin::vppinfra::unformat::raw_unformat_line_input_to_string(input);
-                if let Err(e) = #ident(::vpp_plugin::vlib::cli::CliMainRef::from_ptr_mut(vm), s.as_str()) {
+                if let Err(e) = #call {
                     e.into_raw()
                 } else {
                     std::ptr::null_mut()
@@ -1243,7 +1292,7 @@ pub fn vlib_cli_command(attributes: TokenStream, function: TokenStream) -> Token
                 short_help: #short_help,
                 long_help: std::ptr::null_mut(), // TODO
                 function: Some(#raw_fn_ident),
-                is_mp_safe: ::vpp_plugin::vlib::cli::cli_is_mp_safe(#ident),
+                is_mp_safe: #is_mp_safe,
                 ..::vpp_plugin::bindings::vlib_cli_command_t::new()
             });
 

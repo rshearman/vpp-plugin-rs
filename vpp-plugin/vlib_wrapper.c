@@ -120,6 +120,11 @@ void vlib_helper_zero_combined_counter(vlib_combined_counter_main_t *cm, u32 ind
     vlib_zero_combined_counter(cm, index);
 }
 
+vlib_process_t *vlib_helper_get_current_process(vlib_main_t *vm)
+{
+    return vlib_get_current_process(vm);
+}
+
 // Calls back into Rust code
 void vpp_plugin_rs_poll_async_coroutine(struct async_context *ctx);
 f64 vpp_plugin_rs_next_timer_duration(struct async_context *ctx);

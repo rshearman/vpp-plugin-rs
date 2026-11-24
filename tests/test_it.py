@@ -560,6 +560,16 @@ class IntegrationTestCase(IntegrationTestBase):
         self.assertIn("rust-test message", not_mp_safe)
         self.assertNotIn("rust-test message", mp_safe)
 
+    def test_cli_output(self):
+        """CLI command writing output"""
+        self.assert_equal(self.vapi.cli("rust-test output"), "line 1\nline 2\nline 3\nline 4\n",
+                          "CLI command response")
+
+    def test_cli_output_error(self):
+        """CLI command writing output then returning an error"""
+        self.cli_verify_response("rust-test output error",
+                                 "line 1\nline 2\nline 3\nline 4\nrust-test output: Test error")
+
     def test_type_in_message(self):
         """API with type nested in message"""
         self.vapi.api(

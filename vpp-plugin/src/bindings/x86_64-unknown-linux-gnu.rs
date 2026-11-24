@@ -8770,6 +8770,9 @@ unsafe extern "C" {
 unsafe extern "C" {
     pub fn vlib_helper_zero_combined_counter(cm: *mut vlib_combined_counter_main_t, index: u32_);
 }
+unsafe extern "C" {
+    pub fn vlib_helper_get_current_process(vm: *mut vlib_main_t) -> *mut vlib_process_t;
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct async_context {
